@@ -2,6 +2,7 @@ package ext4
 
 import (
 	"os"
+	"syscall"
 	"time"
 )
 
@@ -13,6 +14,7 @@ type FileInfo struct {
 	name    string
 	size    int64
 	isDir   bool
+	Stat    syscall.Stat_t
 }
 
 // IsDir abbreviation for Mode().IsDir()
@@ -44,5 +46,5 @@ func (fi *FileInfo) Size() int64 {
 
 // Sys underlying data source - not supported yet and so will return nil
 func (fi *FileInfo) Sys() interface{} {
-	return nil
+	return fi.Stat
 }
