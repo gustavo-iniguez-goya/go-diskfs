@@ -11,7 +11,6 @@ import (
 	"path"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -777,27 +776,7 @@ func (fs *FileSystem) ReadDir(p string) ([]os.FileInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("could not read inode %d at position %d in directory: %v", e.inode, i, err)
 		}
-		ret[i] = &FileInfo{
-			modTime: in.modifyTime,
-			name:    e.filename,
-			size:    int64(in.size),
-			isDir:   e.fileType == dirFileTypeDirectory,
-			Stat: syscall.Stat_t{
-				Ino:   uint64(e.inode),
-				Nlink: uint64(in.hardLinks),
-				//Mode:      uint32
-				Uid: in.owner,
-				Gid: in.group,
-				//X__pad0   int32
-				//Rdev      uint64
-				Size: int64(in.size),
-				//Blksize:   int64
-				Blocks: int64(in.blocks),
-				Atim:   syscall.Timespec{Nsec: in.accessTime.UnixNano()},
-				Mtim:   syscall.Timespec{Nsec: in.modifyTime.UnixNano()},
-				Ctim:   syscall.Timespec{Nsec: in.createTime.UnixNano()},
-			},
-		}
+		ret[i] = NewFileInfo(in.modifyTime, in, e)
 	}
 
 	return ret, nil
@@ -1150,27 +1129,7 @@ func (fs *FileSystem) Stat(p string) (iofs.FileInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not read inode %d in directory: %v", entry.inode, err)
 	}
-	return &FileInfo{
-		modTime: in.modifyTime,
-		name:    entry.filename,
-		size:    int64(in.size),
-		isDir:   entry.fileType == dirFileTypeDirectory,
-		Stat: syscall.Stat_t{
-			Ino:   uint64(entry.inode),
-			Nlink: uint64(in.hardLinks),
-			//Mode:      uint32
-			Uid: in.owner,
-			Gid: in.group,
-			//X__pad0   int32
-			//Rdev      uint64
-			Size: int64(in.size),
-			//Blksize:   int64
-			Blocks: int64(in.blocks),
-			Atim:   syscall.Timespec{Nsec: in.accessTime.UnixNano()},
-			Mtim:   syscall.Timespec{Nsec: in.modifyTime.UnixNano()},
-			Ctim:   syscall.Timespec{Nsec: in.createTime.UnixNano()},
-		},
-	}, nil
+	return NewFileInfo(in.modifyTime, in, entry), nil
 }
 
 // SetLabel changes the label on the writable filesystem. Different file system may hav different
