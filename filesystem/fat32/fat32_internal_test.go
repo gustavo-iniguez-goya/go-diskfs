@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/diskfs/go-diskfs/backend/file"
-	"github.com/diskfs/go-diskfs/testhelper"
+	"github.com/gustavo-iniguez-goya/go-diskfs/backend/file"
+	"github.com/gustavo-iniguez-goya/go-diskfs/testhelper"
 	"github.com/google/go-cmp/cmp"
 )
 

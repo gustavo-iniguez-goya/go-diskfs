@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/diskfs/go-diskfs/backend/file"
+	"github.com/gustavo-iniguez-goya/go-diskfs/backend/file"
 )
 
 func TestIso9660ReadDirectory(t *testing.T) {

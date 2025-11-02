@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/diskfs/go-diskfs/filesystem"
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem"
 )
 
 // FileStat is the extended data underlying a single file, similar to https://golang.org/pkg/syscall/#Stat_t

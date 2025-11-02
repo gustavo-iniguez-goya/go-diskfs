@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/diskfs/go-diskfs/backend/file"
-	"github.com/diskfs/go-diskfs/filesystem"
-	"github.com/diskfs/go-diskfs/filesystem/fat32"
-	"github.com/diskfs/go-diskfs/filesystem/iso9660"
-	"github.com/diskfs/go-diskfs/filesystem/squashfs"
+	"github.com/gustavo-iniguez-goya/go-diskfs/backend/file"
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem"
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem/fat32"
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem/iso9660"
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem/squashfs"
 )
 
 func serve(filename, addr, fsType *string) error {

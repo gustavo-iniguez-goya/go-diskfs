@@ -17,13 +17,13 @@ import (
 	"strings"
 	"testing"
 
-	diskfs "github.com/diskfs/go-diskfs"
-	"github.com/diskfs/go-diskfs/backend"
-	"github.com/diskfs/go-diskfs/backend/file"
-	"github.com/diskfs/go-diskfs/disk"
-	"github.com/diskfs/go-diskfs/filesystem"
-	"github.com/diskfs/go-diskfs/filesystem/fat32"
-	"github.com/diskfs/go-diskfs/testhelper"
+	diskfs "github.com/gustavo-iniguez-goya/go-diskfs"
+	"github.com/gustavo-iniguez-goya/go-diskfs/backend"
+	"github.com/gustavo-iniguez-goya/go-diskfs/backend/file"
+	"github.com/gustavo-iniguez-goya/go-diskfs/disk"
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem"
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem/fat32"
+	"github.com/gustavo-iniguez-goya/go-diskfs/testhelper"
 )
 
 var (

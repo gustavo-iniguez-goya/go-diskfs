@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/diskfs/go-diskfs/testhelper"
+	"github.com/gustavo-iniguez-goya/go-diskfs/testhelper"
 )
 
 const (

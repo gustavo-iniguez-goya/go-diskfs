@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/diskfs/go-diskfs/backend/file"
+	"github.com/gustavo-iniguez-goya/go-diskfs/backend/file"
 )
 
 const (

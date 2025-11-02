@@ -5,10 +5,10 @@ import (
 	"log"
 	"os"
 
-	diskfs "github.com/diskfs/go-diskfs"
-	"github.com/diskfs/go-diskfs/disk"
-	"github.com/diskfs/go-diskfs/filesystem"
-	"github.com/diskfs/go-diskfs/filesystem/squashfs"
+	diskfs "github.com/gustavo-iniguez-goya/go-diskfs"
+	"github.com/gustavo-iniguez-goya/go-diskfs/disk"
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem"
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem/squashfs"
 )
 
 func CreateSquashfs(diskImg string) {

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/diskfs/go-diskfs/util/printer"
+	"github.com/gustavo-iniguez-goya/go-diskfs/util/printer"
 	"github.com/google/go-cmp/cmp"
 )
 

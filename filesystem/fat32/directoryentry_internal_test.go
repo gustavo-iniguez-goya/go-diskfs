@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/diskfs/go-diskfs/util/printer"
+	"github.com/gustavo-iniguez-goya/go-diskfs/util/printer"
 )
 
 var (

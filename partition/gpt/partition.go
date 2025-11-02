@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
-	"github.com/diskfs/go-diskfs/backend"
+	"github.com/gustavo-iniguez-goya/go-diskfs/backend"
 	uuid "github.com/google/uuid"
 )
 

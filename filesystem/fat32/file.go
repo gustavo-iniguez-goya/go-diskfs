@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/diskfs/go-diskfs/filesystem"
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem"
 )
 
 // File represents a single file in a FAT32 filesystem
