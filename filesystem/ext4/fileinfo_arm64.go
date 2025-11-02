@@ -21,7 +21,7 @@ func NewFileInfo(modTime time.Time, in *inode, e *directoryEntry) *FileInfo {
 			Gid: in.group,
 			//X__pad0   int32
 			//Rdev      uint64
-			Size: in.size,
+			Size: int64(in.size),
 			//Blksize:   int64
 			Blocks: int64(in.blocks),
 			Atim:   syscall.Timespec{Nsec: in.accessTime.UnixNano()},
