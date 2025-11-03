@@ -15,6 +15,7 @@ import (
 	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem/fat32"
 	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem/iso9660"
 	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem/squashfs"
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem/xfs"
 	"github.com/gustavo-iniguez-goya/go-diskfs/partition"
 	log "github.com/sirupsen/logrus"
 )
@@ -241,6 +242,11 @@ func (d *Disk) GetFilesystem(part int) (filesystem.FileSystem, error) {
 		return ext4FS, nil
 	}
 	log.Debugf("ext4 failed: %v", err)
+	xfsFS, err := xfs.Read(d.Backend, size, start, d.LogicalBlocksize)
+	if err == nil {
+		return xfsFS, nil
+	}
+	log.Debugf("xfs failed: %v", err)
 	return nil, fmt.Errorf("unknown filesystem on partition %d", part)
 }
 

@@ -62,4 +62,6 @@ const (
 	TypeSquashfs
 	// TypeExt4 is an ext4 compatible filesystem
 	TypeExt4
+	// TypeXFS is an xfs compatible filesystem
+	TypeXFS
 )
