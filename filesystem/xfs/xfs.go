@@ -504,12 +504,10 @@ func (fs *FileSystem) navigateToPath(path string) (uint64, *Inode, error) {
 		for _, entry := range entries {
 			if entry.Name() == part {
 				// Extract inode number from sys
-				if sysData, ok := entry.Sys().(map[string]interface{}); ok {
-					if ino, ok := sysData["inode"].(uint64); ok {
-						currentIno = ino
-						found = true
-						break
-					}
+				if sysData, ok := entry.Sys().(*syscall.Stat_t); ok {
+					currentIno = sysData.Ino
+					found = true
+					break
 				}
 			}
 		}
@@ -527,13 +525,13 @@ func (fs *FileSystem) navigateToPath(path string) (uint64, *Inode, error) {
 func (fs *FileSystem) listDir(inum uint64, inode *Inode) ([]*FileInfo, error) {
 	switch inode.Format {
 	case XFS_DINODE_FMT_LOCAL:
-		fmt.Println("FMT_LOCAL")
 		return fs.readShortformDir(inode)
 	case XFS_DINODE_FMT_EXTENTS:
-		fmt.Println("FMT_EXTENTS")
 		return fs.readBlockDir(inode, inum)
+	case XFS_DINODE_FMT_BTREE:
+		return nil, fmt.Errorf("B+tree directory format not yet implemented (inode %d)", inum)
 	default:
-		return nil, fmt.Errorf("unsupported directory format: %d", inode.Format)
+		return nil, fmt.Errorf("unsupported directory format %d for inode %d", inode.Format, inum)
 	}
 }
 
@@ -566,22 +564,20 @@ func (fs *FileSystem) readShortformDir(inode *Inode) ([]*FileInfo, error) {
 		mode:    os.ModeDir | 0755,
 		modTime: inode.Mtime.ToTime(),
 		isDir:   true,
-		sys: &syscall.Stat_t{
-			Ino: inode.Ino,
-			Uid: inode.UID,
-			Gid: inode.GID,
-		},
+		sys:     makeStatT(inode, inode.Ino),
 	})
 
+	parentStat := &syscall.Stat_t{
+		Ino:  parent,
+		Mode: uint32(S_IFDIR | 0755),
+	}
 	entries = append(entries, &FileInfo{
 		name:    "..",
 		size:    0,
 		mode:    os.ModeDir | 0755,
 		modTime: inode.Mtime.ToTime(),
 		isDir:   true,
-		sys: &syscall.Stat_t{
-			Ino: parent,
-		},
+		sys:     parentStat,
 	})
 
 	for i := 0; i < int(count); i++ {
@@ -653,11 +649,7 @@ func (fs *FileSystem) readShortformDir(inode *Inode) ([]*FileInfo, error) {
 			mode:    mode,
 			modTime: childInode.Mtime.ToTime(),
 			isDir:   isDir,
-			sys: &syscall.Stat_t{
-				Ino: ino,
-				Uid: childInode.UID,
-				Gid: childInode.GID,
-			},
+			sys:     makeStatT(childInode, ino),
 		})
 	}
 
@@ -699,41 +691,77 @@ func (fs *FileSystem) readBlockDir(inode *Inode, inum uint64) ([]*FileInfo, erro
 
 // parseBlockDirData parses directory data from a block
 func (fs *FileSystem) parseBlockDirData(block []byte, dirInum uint64) ([]*FileInfo, error) {
+	if len(block) < 4 {
+		return nil, fmt.Errorf("directory block too short: %d bytes", len(block))
+	}
+
 	magic := binary.BigEndian.Uint32(block[0:4])
 
-	offset := 64
-	if magic == 0x58443344 || magic == 0x58444233 {
+	var offset int
+	var headerType string
+
+	// XFS directory block header magic numbers
+	if magic == 0x58443344 { // "XD3D" - V5 data block
 		offset = 64
-	} else {
+		headerType = "XD3D (V5 data)"
+	} else if magic == 0x58444233 { // "XDB3" - V5 block directory
+		offset = 64
+		headerType = "XDB3 (V5 block)"
+	} else if magic == 0x58443242 { // "XD2B" - V4 block
 		offset = 16
+		headerType = "XD2B (V4 block)"
+	} else if magic == 0x58443244 { // "XD2D" - V4 data
+		offset = 16
+		headerType = "XD2D (V4 data)"
+	} else {
+		// Unknown magic - try to continue with offset 16 (V4 fallback)
+		offset = 16
+		headerType = fmt.Sprintf("Unknown (0x%08x)", magic)
 	}
 
 	var entries []*FileInfo
+	entriesFound := 0
 
 	for offset < len(block)-8 {
+		// Read inode number (8 bytes)
+		if offset+8 > len(block) {
+			break
+		}
+
 		ino := binary.BigEndian.Uint64(block[offset : offset+8])
+
+		// Check for unused entry markers
 		if ino == 0 || ino == 0xFFFFFFFFFFFFFFFF {
 			offset += 8
 			continue
 		}
 
-		if offset+8 >= len(block) {
+		// Read namelen (1 byte)
+		if offset+9 > len(block) {
 			break
 		}
 
 		namelen := int(block[offset+8])
-		if namelen == 0 || offset+9+namelen > len(block) {
+		if namelen == 0 {
+			break
+		}
+
+		// Check if we have enough space for name
+		if offset+9+namelen > len(block) {
 			break
 		}
 
 		name := string(block[offset+9 : offset+9+namelen])
 
+		// Validate name
 		if len(name) == 0 {
 			break
 		}
 
+		// Try to read the inode
 		childInode, err := fs.readInode(ino)
 		if err != nil {
+			// Can't read inode - skip this entry
 			offset += 9 + namelen + ((4 - (namelen & 3)) & 3)
 			continue
 		}
@@ -750,10 +778,19 @@ func (fs *FileSystem) parseBlockDirData(block []byte, dirInum uint64) ([]*FileIn
 			mode:    mode,
 			modTime: childInode.Mtime.ToTime(),
 			isDir:   isDir,
-			sys:     &syscall.Stat_t{Ino: ino},
+			sys:     makeStatT(childInode, ino),
 		})
 
-		offset += 9 + namelen + ((4 - (namelen & 3)) & 3)
+		entriesFound++
+
+		// Move to next entry (aligned to 4 bytes)
+		entrySize := 9 + namelen
+		padding := (4 - (entrySize & 3)) & 3
+		offset += entrySize + padding
+	}
+
+	if entriesFound == 0 {
+		return nil, fmt.Errorf("no valid entries found in directory block (magic: %s, inode: %d)", headerType, dirInum)
 	}
 
 	return entries, nil
@@ -1058,7 +1095,6 @@ func (fs *FileSystem) Stat(path string) (*FileInfo, error) {
 	if isDir {
 		mode |= os.ModeDir
 	}
-
 	return &FileInfo{
 		name:    filepath.Base(path),
 		size:    inode.Size,
@@ -1066,9 +1102,15 @@ func (fs *FileSystem) Stat(path string) (*FileInfo, error) {
 		modTime: inode.Mtime.ToTime(),
 		isDir:   (inode.Mode & S_IFMT) == S_IFDIR,
 		sys: &syscall.Stat_t{
-			Ino: inode.Ino,
-			Uid: inode.UID,
-			Gid: inode.GID,
+			Ino:  inode.Ino,
+			Mode: uint32(inode.Mode),
+			// TODO: Nlink has different var types on some archs
+			//Nlink:   uint64(inode.NLink),
+			Uid:     inode.UID,
+			Gid:     inode.GID,
+			Size:    inode.Size,
+			Blksize: 512, // XFS typically uses 512-byte blocks for stat
+			Blocks:  inode.NBlocks,
 			//Atim: inode.Atime,
 			//Mtim: inode.Mtime,
 			//Ctim: inode.Ctime,
