@@ -7,10 +7,12 @@ package xfs
 import (
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gustavo-iniguez-goya/go-diskfs/backend"
@@ -20,7 +22,8 @@ import (
 const (
 	XFS_SB_MAGIC     = 0x58465342 // "XFSB"
 	XFS_SB_VERSION_5 = 0x0005
-	XFS_DINODE_MAGIC = 0x494e // "IN"
+	XFS_DINODE_MAGIC = 0x494e     // "IN"
+	XFS_CRC_SEED     = 0xFFFFFFFF // CRC32c seed for XFS
 
 	// Inode formats
 	XFS_DINODE_FMT_DEV     = 0
@@ -38,6 +41,11 @@ const (
 	S_IFBLK  = 0060000
 	S_IFIFO  = 0010000
 	S_IFSOCK = 0140000
+)
+
+var (
+	// CRC32c (Castagnoli) table
+	crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 )
 
 // FileSystem represents an XFS filesystem implementing the diskfs interface
@@ -216,7 +224,6 @@ func (f *File) Seek(offset int64, whence int) (int64, error) {
 
 // Close closes the file
 func (f *File) Close() error {
-	*f = File{}
 	return nil
 }
 
@@ -263,8 +270,7 @@ func Read(b backend.Storage, size, start, blocksize int64) (*FileSystem, error) 
 
 // Type returns the filesystem type
 func (fs *FileSystem) Type() filesystem.Type {
-	//return filesystem.Type(0x58465342) // XFS magic as type
-	return filesystem.TypeExt4
+	return filesystem.Type(0x58465342) // XFS magic as type
 }
 
 // readSuperblock reads and parses the superblock
@@ -401,94 +407,6 @@ func (fs *FileSystem) readInode(inum uint64) (*Inode, error) {
 	return inode, nil
 }
 
-// writeInode writes an inode back to disk
-func (fs *FileSystem) writeInode(inum uint64, inode *Inode) error {
-	// Calculate inode location
-	agno := inum / uint64(fs.sb.AGBlocks*uint32(fs.sb.Inopblock))
-	agino := inum % uint64(fs.sb.AGBlocks*uint32(fs.sb.Inopblock))
-	agbno := agino / uint64(fs.sb.Inopblock)
-	offset := agino % uint64(fs.sb.Inopblock)
-
-	blockno := agno*uint64(fs.sb.AGBlocks) + agbno
-	inodeOffset := fs.start + int64(blockno*uint64(fs.blockSize)) + int64(offset*uint64(fs.inodeSize))
-
-	// Build inode buffer
-	buf := make([]byte, fs.inodeSize)
-
-	// Write header
-	binary.BigEndian.PutUint16(buf[0:2], inode.Magic)
-	binary.BigEndian.PutUint16(buf[2:4], inode.Mode)
-	buf[4] = byte(inode.Version)
-	buf[5] = byte(inode.Format)
-	binary.BigEndian.PutUint16(buf[6:8], inode.OnLink)
-	binary.BigEndian.PutUint32(buf[8:12], inode.UID)
-	binary.BigEndian.PutUint32(buf[12:16], inode.GID)
-	binary.BigEndian.PutUint32(buf[16:20], inode.NLink)
-	binary.BigEndian.PutUint16(buf[20:22], inode.ProjID)
-	binary.BigEndian.PutUint16(buf[22:24], inode.ProjIDHi)
-	copy(buf[24:30], inode.Padding[:])
-	binary.BigEndian.PutUint16(buf[30:32], inode.FlushIter)
-
-	// Timestamps
-	binary.BigEndian.PutUint32(buf[32:36], uint32(inode.Atime.Sec))
-	binary.BigEndian.PutUint32(buf[36:40], uint32(inode.Atime.Nsec))
-	binary.BigEndian.PutUint32(buf[40:44], uint32(inode.Mtime.Sec))
-	binary.BigEndian.PutUint32(buf[44:48], uint32(inode.Mtime.Nsec))
-	binary.BigEndian.PutUint32(buf[48:52], uint32(inode.Ctime.Sec))
-	binary.BigEndian.PutUint32(buf[52:56], uint32(inode.Ctime.Nsec))
-
-	// File size and extents
-	binary.BigEndian.PutUint64(buf[56:64], uint64(inode.Size))
-	binary.BigEndian.PutUint64(buf[64:72], uint64(inode.NBlocks))
-	binary.BigEndian.PutUint32(buf[72:76], inode.ExtSize)
-	binary.BigEndian.PutUint32(buf[76:80], uint32(inode.Nextents))
-	binary.BigEndian.PutUint16(buf[80:82], uint16(inode.Anextents))
-	buf[82] = byte(inode.Forkoff)
-	buf[83] = byte(inode.Aformat)
-	binary.BigEndian.PutUint32(buf[84:88], inode.DMevmask)
-	binary.BigEndian.PutUint16(buf[88:90], inode.DMstate)
-	binary.BigEndian.PutUint16(buf[90:92], inode.Flags)
-	binary.BigEndian.PutUint32(buf[92:96], inode.Gen)
-	binary.BigEndian.PutUint32(buf[96:100], inode.NextUnlinked)
-
-	// V3 fields
-	if inode.Version >= 3 {
-		// Update change count for metadata versioning
-		inode.ChangeCount++
-
-		binary.BigEndian.PutUint32(buf[100:104], inode.CRC) // CRC calculated later
-		binary.BigEndian.PutUint64(buf[104:112], inode.ChangeCount)
-		binary.BigEndian.PutUint64(buf[112:120], inode.LSN)
-		binary.BigEndian.PutUint64(buf[120:128], inode.Flags2)
-		binary.BigEndian.PutUint32(buf[128:132], inode.Cowextsize)
-		copy(buf[132:144], inode.Padding2[:])
-		binary.BigEndian.PutUint32(buf[144:148], uint32(inode.Crtime.Sec))
-		binary.BigEndian.PutUint32(buf[148:152], uint32(inode.Crtime.Nsec))
-		binary.BigEndian.PutUint64(buf[152:160], inode.Ino)
-		copy(buf[160:176], inode.UUID[:])
-
-		// Copy data fork
-		dataForkStart := 176
-		copy(buf[dataForkStart:], inode.DataFork)
-
-		// Calculate and update CRC for V3 inodes
-		crc := fs.calculateInodeCRC(buf, inum)
-		binary.BigEndian.PutUint32(buf[100:104], crc)
-	} else {
-		// V1/V2 inode
-		dataForkStart := 100
-		copy(buf[dataForkStart:], inode.DataFork)
-	}
-
-	// Write to disk
-	writableFile, err := fs.backend.Writable()
-	if err != nil {
-		return err
-	}
-	_, err = writableFile.WriteAt(buf, inodeOffset)
-	return err
-}
-
 // OpenFile opens a file or directory
 func (fs *FileSystem) OpenFile(p string, flag int) (filesystem.File, error) {
 	// Normalize path
@@ -609,8 +527,10 @@ func (fs *FileSystem) navigateToPath(path string) (uint64, *Inode, error) {
 func (fs *FileSystem) listDir(inum uint64, inode *Inode) ([]*FileInfo, error) {
 	switch inode.Format {
 	case XFS_DINODE_FMT_LOCAL:
+		fmt.Println("FMT_LOCAL")
 		return fs.readShortformDir(inode)
 	case XFS_DINODE_FMT_EXTENTS:
+		fmt.Println("FMT_EXTENTS")
 		return fs.readBlockDir(inode, inum)
 	default:
 		return nil, fmt.Errorf("unsupported directory format: %d", inode.Format)
@@ -646,7 +566,11 @@ func (fs *FileSystem) readShortformDir(inode *Inode) ([]*FileInfo, error) {
 		mode:    os.ModeDir | 0755,
 		modTime: inode.Mtime.ToTime(),
 		isDir:   true,
-		sys:     map[string]interface{}{"inode": inode.Ino},
+		sys: &syscall.Stat_t{
+			Ino: inode.Ino,
+			Uid: inode.UID,
+			Gid: inode.GID,
+		},
 	})
 
 	entries = append(entries, &FileInfo{
@@ -655,7 +579,9 @@ func (fs *FileSystem) readShortformDir(inode *Inode) ([]*FileInfo, error) {
 		mode:    os.ModeDir | 0755,
 		modTime: inode.Mtime.ToTime(),
 		isDir:   true,
-		sys:     map[string]interface{}{"inode": parent},
+		sys: &syscall.Stat_t{
+			Ino: parent,
+		},
 	})
 
 	for i := 0; i < int(count); i++ {
@@ -710,7 +636,7 @@ func (fs *FileSystem) readShortformDir(inode *Inode) ([]*FileInfo, error) {
 				mode:    mode,
 				modTime: time.Time{},
 				isDir:   isDir,
-				sys:     map[string]interface{}{"inode": ino},
+				sys:     &syscall.Stat_t{Ino: ino},
 			})
 			continue
 		}
@@ -727,7 +653,11 @@ func (fs *FileSystem) readShortformDir(inode *Inode) ([]*FileInfo, error) {
 			mode:    mode,
 			modTime: childInode.Mtime.ToTime(),
 			isDir:   isDir,
-			sys:     map[string]interface{}{"inode": ino},
+			sys: &syscall.Stat_t{
+				Ino: ino,
+				Uid: childInode.UID,
+				Gid: childInode.GID,
+			},
 		})
 	}
 
@@ -820,7 +750,7 @@ func (fs *FileSystem) parseBlockDirData(block []byte, dirInum uint64) ([]*FileIn
 			mode:    mode,
 			modTime: childInode.Mtime.ToTime(),
 			isDir:   isDir,
-			sys:     map[string]interface{}{"inode": ino},
+			sys:     &syscall.Stat_t{Ino: ino},
 		})
 
 		offset += 9 + namelen + ((4 - (namelen & 3)) & 3)
@@ -844,7 +774,7 @@ func (fs *FileSystem) Rename(oldpath, newpath string) error {
 	return fmt.Errorf("XFS rename not supported (read-only)")
 }
 
-// Chmod changes file mode (not supported - read-only)
+// Chmod changes file mode
 func (fs *FileSystem) Chmod(path string, mode os.FileMode) error {
 	path = filepath.Clean(path)
 	if !strings.HasPrefix(path, "/") {
@@ -862,59 +792,6 @@ func (fs *FileSystem) Chmod(path string, mode os.FileMode) error {
 
 	// Write inode back to disk
 	return fs.writeInode(inum, inode)
-}
-
-// SetLabel changes the label on the writable filesystem. Different file system may hav different
-// length constraints.
-func (fs *FileSystem) SetLabel(label string) error {
-	//fs.superblock.volumeLabel = label
-	return fmt.Errorf("XFS chown not supported (read-only)") //fs.writeSuperblock()
-}
-
-// Label returns the filesystem label
-func (fs *FileSystem) Label() string {
-	return string(fs.sb.Fname[:])
-}
-
-// Mknod creates a special file (not supported - read-only)
-func (fs *FileSystem) Mknod(pathname string, mode uint32, dev int) error {
-	return fmt.Errorf("XFS mknod not supported (read-only)")
-}
-
-// Link creates a hard link (not supported - read-only)
-func (fs *FileSystem) Link(oldpath, newpath string) error {
-	return fmt.Errorf("XFS link not supported (read-only)")
-}
-
-// Symlink creates a symbolic link (not supported - read-only)
-func (fs *FileSystem) Symlink(oldpath, newpath string) error {
-	return fmt.Errorf("XFS symlink not supported (read-only)")
-}
-
-// Readlink reads a symbolic link
-func (fs *FileSystem) Readlink(path string) (string, error) {
-	// TODO: implement symlink reading from inode data fork
-	return "", fmt.Errorf("XFS readlink not yet implemented")
-}
-
-func (fs *FileSystem) Close() error {
-	return nil
-}
-
-// SetBackendWritable allows enabling write operations
-// WARNING: Use with caution! Writing to XFS can corrupt the filesystem
-func (fs *FileSystem) SetBackendWritable(writable bool) error {
-	// Check if backend supports writing
-	if writable {
-		// Try to write a test byte to verify write capability
-		testBuf := make([]byte, 1)
-		writableFile, err := fs.backend.Writable()
-		_, err = writableFile.WriteAt(testBuf, fs.start+int64(fs.size)-1)
-		if err != nil {
-			return fmt.Errorf("backend does not support writing: %w", err)
-		}
-	}
-	return nil
 }
 
 // Chown changes file ownership
@@ -972,11 +849,229 @@ func (fs *FileSystem) Utimes(path string, atime, mtime time.Time) error {
 	return fs.writeInode(inum, inode)
 }
 
+// writeInode writes an inode back to disk
+func (fs *FileSystem) writeInode(inum uint64, inode *Inode) error {
+	// Calculate inode location
+	agno := inum / uint64(fs.sb.AGBlocks*uint32(fs.sb.Inopblock))
+	agino := inum % uint64(fs.sb.AGBlocks*uint32(fs.sb.Inopblock))
+	agbno := agino / uint64(fs.sb.Inopblock)
+	offset := agino % uint64(fs.sb.Inopblock)
+
+	blockno := agno*uint64(fs.sb.AGBlocks) + agbno
+	inodeOffset := fs.start + int64(blockno*uint64(fs.blockSize)) + int64(offset*uint64(fs.inodeSize))
+
+	// Build inode buffer
+	buf := make([]byte, fs.inodeSize)
+
+	// Write header
+	binary.BigEndian.PutUint16(buf[0:2], inode.Magic)
+	binary.BigEndian.PutUint16(buf[2:4], inode.Mode)
+	buf[4] = byte(inode.Version)
+	buf[5] = byte(inode.Format)
+	binary.BigEndian.PutUint16(buf[6:8], inode.OnLink)
+	binary.BigEndian.PutUint32(buf[8:12], inode.UID)
+	binary.BigEndian.PutUint32(buf[12:16], inode.GID)
+	binary.BigEndian.PutUint32(buf[16:20], inode.NLink)
+	binary.BigEndian.PutUint16(buf[20:22], inode.ProjID)
+	binary.BigEndian.PutUint16(buf[22:24], inode.ProjIDHi)
+	copy(buf[24:30], inode.Padding[:])
+	binary.BigEndian.PutUint16(buf[30:32], inode.FlushIter)
+
+	// Timestamps
+	binary.BigEndian.PutUint32(buf[32:36], uint32(inode.Atime.Sec))
+	binary.BigEndian.PutUint32(buf[36:40], uint32(inode.Atime.Nsec))
+	binary.BigEndian.PutUint32(buf[40:44], uint32(inode.Mtime.Sec))
+	binary.BigEndian.PutUint32(buf[44:48], uint32(inode.Mtime.Nsec))
+	binary.BigEndian.PutUint32(buf[48:52], uint32(inode.Ctime.Sec))
+	binary.BigEndian.PutUint32(buf[52:56], uint32(inode.Ctime.Nsec))
+
+	// File size and extents
+	binary.BigEndian.PutUint64(buf[56:64], uint64(inode.Size))
+	binary.BigEndian.PutUint64(buf[64:72], uint64(inode.NBlocks))
+	binary.BigEndian.PutUint32(buf[72:76], inode.ExtSize)
+	binary.BigEndian.PutUint32(buf[76:80], uint32(inode.Nextents))
+	binary.BigEndian.PutUint16(buf[80:82], uint16(inode.Anextents))
+	buf[82] = byte(inode.Forkoff)
+	buf[83] = byte(inode.Aformat)
+	binary.BigEndian.PutUint32(buf[84:88], inode.DMevmask)
+	binary.BigEndian.PutUint16(buf[88:90], inode.DMstate)
+	binary.BigEndian.PutUint16(buf[90:92], inode.Flags)
+	binary.BigEndian.PutUint32(buf[92:96], inode.Gen)
+	binary.BigEndian.PutUint32(buf[96:100], inode.NextUnlinked)
+
+	// V3 fields
+	if inode.Version >= 3 {
+		// Update change count for metadata versioning
+		inode.ChangeCount++
+
+		// Write placeholder CRC (will be calculated later)
+		binary.LittleEndian.PutUint32(buf[100:104], 0)
+
+		binary.BigEndian.PutUint64(buf[104:112], inode.ChangeCount)
+		binary.BigEndian.PutUint64(buf[112:120], inode.LSN)
+		binary.BigEndian.PutUint64(buf[120:128], inode.Flags2)
+		binary.BigEndian.PutUint32(buf[128:132], inode.Cowextsize)
+		copy(buf[132:144], inode.Padding2[:])
+		binary.BigEndian.PutUint32(buf[144:148], uint32(inode.Crtime.Sec))
+		binary.BigEndian.PutUint32(buf[148:152], uint32(inode.Crtime.Nsec))
+		binary.BigEndian.PutUint64(buf[152:160], inode.Ino)
+		copy(buf[160:176], inode.UUID[:])
+
+		// Copy data fork
+		dataForkStart := 176
+		copy(buf[dataForkStart:], inode.DataFork)
+
+		// Calculate and update CRC for V3 inodes
+		// CRC must be stored in little-endian format
+		crc := fs.calculateInodeCRC(buf, inum)
+		binary.LittleEndian.PutUint32(buf[100:104], crc)
+	} else {
+		// V1/V2 inode
+		dataForkStart := 100
+		copy(buf[dataForkStart:], inode.DataFork)
+	}
+
+	writableFile, err := fs.backend.Writable()
+	if err != nil {
+		return err
+	}
+	// Write to disk
+	_, err = writableFile.WriteAt(buf, inodeOffset)
+	return err
+}
+
 // calculateInodeCRC calculates CRC32c for an inode (XFS V5)
 func (fs *FileSystem) calculateInodeCRC(buf []byte, inum uint64) uint32 {
-	// XFS uses CRC32c (Castagnoli) with special initialization
-	// This is a simplified version - real XFS has more complex CRC handling
-	// For now, return 0 to indicate CRC not fully implemented
-	// TODO: Implement proper CRC32c calculation with XFS-specific handling
-	return 0
+	// XFS uses CRC32c (Castagnoli) with specific handling:
+	// 1. Start with seed 0xFFFFFFFF
+	// 2. Zero out the CRC field (bytes 100-103)
+	// 3. Calculate CRC over entire inode buffer
+	// 4. XOR result with 0xFFFFFFFF (one's complement)
+	// 5. Store in little-endian format
+
+	// The CRC field is at offset 100, which should already be zeroed
+	// in the buffer we receive, but let's ensure it
+	if len(buf) < 104 {
+		return 0
+	}
+
+	// Calculate CRC32c over the entire buffer
+	// Note: XFS stores CRC in little-endian, but the calculation uses the buffer as-is
+	crc := crc32.Checksum(buf, crc32cTable)
+
+	// XFS uses one's complement of the CRC
+	crc = ^crc
+
+	return crc
+}
+
+// verifyCRC verifies the CRC of an inode buffer
+func (fs *FileSystem) verifyCRC(buf []byte) bool {
+	if len(buf) < 104 {
+		return false
+	}
+
+	// Read stored CRC (little-endian at offset 100)
+	storedCRC := binary.LittleEndian.Uint32(buf[100:104])
+
+	// Zero out the CRC field temporarily for calculation
+	savedCRC := make([]byte, 4)
+	copy(savedCRC, buf[100:104])
+	binary.LittleEndian.PutUint32(buf[100:104], 0)
+
+	// Calculate CRC
+	calculatedCRC := crc32.Checksum(buf, crc32cTable)
+	calculatedCRC = ^calculatedCRC
+
+	// Restore the original CRC value
+	copy(buf[100:104], savedCRC)
+
+	return storedCRC == calculatedCRC
+}
+
+// SetBackendWritable allows enabling write operations
+// WARNING: Use with caution! Writing to XFS can corrupt the filesystem
+func (fs *FileSystem) SetBackendWritable(writable bool) error {
+	// Check if backend supports writing
+	if writable {
+		// Try to write a test byte to verify write capability
+		testBuf := make([]byte, 1)
+		writableFile, err := fs.backend.Writable()
+		if err != nil {
+			return err
+		}
+		_, err = writableFile.WriteAt(testBuf, fs.start+int64(fs.size)-1)
+		if err != nil {
+			return fmt.Errorf("backend does not support writing: %w", err)
+		}
+	}
+	return nil
+}
+
+// Label returns the filesystem label
+func (fs *FileSystem) Label() string {
+	return string(fs.sb.Fname[:])
+}
+
+// Mknod creates a special file (not supported - read-only)
+func (fs *FileSystem) Mknod(pathname string, mode uint32, dev int) error {
+	return fmt.Errorf("XFS mknod not supported (read-only)")
+}
+
+// Link creates a hard link (not supported - read-only)
+func (fs *FileSystem) Link(oldpath, newpath string) error {
+	return fmt.Errorf("XFS link not supported (read-only)")
+}
+
+// Symlink creates a symbolic link (not supported - read-only)
+func (fs *FileSystem) Symlink(oldpath, newpath string) error {
+	return fmt.Errorf("XFS symlink not supported (read-only)")
+}
+
+// Readlink reads a symbolic link
+func (fs *FileSystem) Readlink(path string) (string, error) {
+	// TODO: implement symlink reading from inode data fork
+	return "", fmt.Errorf("XFS readlink not yet implemented")
+}
+
+func (fs *FileSystem) Close() error {
+	return nil
+}
+
+func (fs *FileSystem) SetLabel(label string) error {
+	return fmt.Errorf("XFS chown not supported (read-only)")
+}
+
+func (fs *FileSystem) Stat(path string) (*FileInfo, error) {
+	path = filepath.Clean(path)
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+
+	_, inode, err := fs.navigateToPath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	mode := os.FileMode(inode.Mode & 0777)
+	isDir := (inode.Mode & S_IFMT) == S_IFDIR
+	if isDir {
+		mode |= os.ModeDir
+	}
+
+	return &FileInfo{
+		name:    filepath.Base(path),
+		size:    inode.Size,
+		mode:    mode,
+		modTime: inode.Mtime.ToTime(),
+		isDir:   (inode.Mode & S_IFMT) == S_IFDIR,
+		sys: &syscall.Stat_t{
+			Ino: inode.Ino,
+			Uid: inode.UID,
+			Gid: inode.GID,
+			//Atim: inode.Atime,
+			//Mtim: inode.Mtime,
+			//Ctim: inode.Ctime,
+		},
+	}, nil
 }
