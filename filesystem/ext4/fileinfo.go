@@ -14,7 +14,7 @@ type FileInfo struct {
 	name    string
 	size    int64
 	isDir   bool
-	Stat    syscall.Stat_t
+	Stat    *syscall.Stat_t
 }
 
 // IsDir abbreviation for Mode().IsDir()

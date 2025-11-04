@@ -13,7 +13,7 @@ func NewFileInfo(modTime time.Time, in *inode, e *directoryEntry) *FileInfo {
 		name:    e.filename,
 		size:    int64(in.size),
 		isDir:   e.fileType == dirFileTypeDirectory,
-		Stat: syscall.Stat_t{
+		Stat: &syscall.Stat_t{
 			Ino:   uint64(e.inode),
 			Nlink: uint64(in.hardLinks),
 			//Mode:      uint32
