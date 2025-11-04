@@ -113,6 +113,7 @@ type inode struct {
 	permissionsGroup       filePermissions
 	permissionsOwner       filePermissions
 	fileType               fileType
+	mode                   uint16
 	owner                  uint32
 	group                  uint32
 	size                   uint64
@@ -267,6 +268,7 @@ func inodeFromBytes(b []byte, sb *superblock, number uint32) (*inode, error) {
 		permissionsGroup:       parseGroupPermissions(mode),
 		permissionsOwner:       parseOwnerPermissions(mode),
 		permissionsOther:       parseOtherPermissions(mode),
+		mode:                   mode,
 		fileType:               fileType,
 		owner:                  binary.LittleEndian.Uint32(owner),
 		group:                  binary.LittleEndian.Uint32(group),

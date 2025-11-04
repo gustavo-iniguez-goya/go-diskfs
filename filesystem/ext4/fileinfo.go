@@ -1,6 +1,7 @@
 package ext4
 
 import (
+	"io/fs"
 	"os"
 	"syscall"
 	"time"
@@ -47,4 +48,44 @@ func (fi *FileInfo) Size() int64 {
 // Sys underlying data source - not supported yet and so will return nil
 func (fi *FileInfo) Sys() interface{} {
 	return fi.Stat
+}
+
+func modeToFileMode(mode uint16) fs.FileMode {
+	var m fs.FileMode
+
+	// File type bits
+	switch mode & 0xF000 {
+	case 0x4000:
+		m |= fs.ModeDir
+	case 0xA000:
+		m |= fs.ModeSymlink
+	case 0x8000:
+		// regular file → nothing special
+	case 0x2000:
+		m |= fs.ModeCharDevice
+	case 0x6000:
+		m |= fs.ModeDevice
+	case 0x1000:
+		m |= fs.ModeNamedPipe
+	case 0xC000:
+		m |= fs.ModeSocket
+	default:
+		m |= fs.ModeIrregular
+	}
+
+	// Special bits
+	if mode&0x0800 != 0 {
+		m |= fs.ModeSetgid
+	}
+	if mode&0x1000 != 0 {
+		m |= fs.ModeSetuid
+	}
+	if mode&0x0400 != 0 {
+		m |= fs.ModeSticky
+	}
+
+	// Permission bits (same layout as in UNIX)
+	m |= fs.FileMode(mode & 0x01FF)
+
+	return m
 }
