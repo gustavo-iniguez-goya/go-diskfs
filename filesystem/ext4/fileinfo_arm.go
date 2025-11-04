@@ -7,13 +7,13 @@ import (
 	"time"
 )
 
-func NewFileInfo(modTime time.Time, in *inode, e *directoryEntry) *FileInfo{
+func NewFileInfo(modTime time.Time, in *inode, e *directoryEntry) *FileInfo {
 	return &FileInfo{
 		modTime: modTime,
 		name:    e.filename,
 		size:    int64(in.size),
 		isDir:   e.fileType == dirFileTypeDirectory,
-		Stat: syscall.Stat_t{
+		Stat: &syscall.Stat_t{
 			Ino:   uint64(e.inode),
 			Nlink: uint32(in.hardLinks),
 			//Mode:      uint32
@@ -28,6 +28,5 @@ func NewFileInfo(modTime time.Time, in *inode, e *directoryEntry) *FileInfo{
 			Mtim:   syscall.Timespec{Nsec: int32(in.modifyTime.UnixNano())},
 			Ctim:   syscall.Timespec{Nsec: int32(in.createTime.UnixNano())},
 		},
-
 	}
 }
