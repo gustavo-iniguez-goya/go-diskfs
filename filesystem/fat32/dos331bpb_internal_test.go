@@ -6,29 +6,31 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem/fat12"
 )
 
-func getValidDos331BPB() *dos331BPB {
-	return &dos331BPB{
-		dos20BPB:        getValidDos20BPB(),
-		sectorsPerTrack: uint16(fsInfo.sectorsPerTrack),
-		heads:           uint16(fsInfo.heads),
-		hiddenSectors:   fsInfo.hiddenSectors,
-		totalSectors:    0,
+func getValidDos331BPB() *fat12.Dos331BPB {
+	return &fat12.Dos331BPB{
+		Dos20BPB:        getValidDos20BPB(),
+		SectorsPerTrack: uint16(fsInfo.sectorsPerTrack),
+		Heads:           uint16(fsInfo.heads),
+		HiddenSectors:   fsInfo.hiddenSectors,
+		TotalSectors32:  0,
 	}
 }
 
 func TestDos331BPBFromBytes(t *testing.T) {
 	t.Run("mismatched length", func(t *testing.T) {
 		b := make([]byte, 24, 25)
-		bpb, err := dos331BPBFromBytes(b)
+		bpb, err := fat12.Dos331BPBFromBytes(b)
 		if err == nil {
 			t.Errorf("Did not return expected error")
 		}
 		if bpb != nil {
 			t.Fatalf("returned bpb was non-nil")
 		}
-		expected := "cannot read DOS 3.31 BPB from invalid byte slice"
+		expected := "cannot read DOS 3.31 BPB"
 		if !strings.HasPrefix(err.Error(), expected) {
 			t.Errorf("error type %s instead of expected %s", err.Error(), expected)
 		}
@@ -37,7 +39,7 @@ func TestDos331BPBFromBytes(t *testing.T) {
 		size := uint16(511)
 		b := make([]byte, 25)
 		binary.LittleEndian.PutUint16(b[0:2], size)
-		bpb, err := dos331BPBFromBytes(b)
+		bpb, err := fat12.Dos331BPBFromBytes(b)
 		if err == nil {
 			t.Errorf("Did not return expected error")
 		}
@@ -55,7 +57,7 @@ func TestDos331BPBFromBytes(t *testing.T) {
 			t.Fatalf("error reading test fixture data from %s: %v", Fat32File, err)
 		}
 		inputBytes := input[11:36]
-		bpb, err := dos331BPBFromBytes(inputBytes)
+		bpb, err := fat12.Dos331BPBFromBytes(inputBytes)
 		if err != nil {
 			t.Errorf("returned unexpected non-nil error: %v", err)
 		}
@@ -63,7 +65,7 @@ func TestDos331BPBFromBytes(t *testing.T) {
 			t.Fatalf("returned bpb was nil")
 		}
 		valid := getValidDos331BPB()
-		if !bpb.equal(valid) {
+		if !bpb.Equal(valid) {
 			t.Log(bpb)
 			t.Log(valid)
 			t.Fatalf("Mismatched BPB")
@@ -73,7 +75,7 @@ func TestDos331BPBFromBytes(t *testing.T) {
 
 func TestDos331BPBToBytes(t *testing.T) {
 	bpb := getValidDos331BPB()
-	b := bpb.toBytes()
+	b := bpb.ToBytes()
 	if b == nil {
 		t.Fatal("b was nil unexpectedly")
 	}

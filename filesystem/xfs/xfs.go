@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -244,7 +245,7 @@ func (f *File) Stat() (os.FileInfo, error) {
 }
 
 // Readdir reads directory entries (deprecated but needed for compatibility)
-func (f *File) Readdir(n int) ([]os.FileInfo, error) {
+func (f *File) Readdir(n int) ([]os.DirEntry, error) {
 	if !f.isDir {
 		return nil, fmt.Errorf("not a directory")
 	}
@@ -266,6 +267,17 @@ func Read(b backend.Storage, size, start, blocksize int64) (*FileSystem, error) 
 	}
 
 	return fs, nil
+}
+
+// ReadFile implements ReadFileFS to read an entire file into memory
+func (fs *FileSystem) ReadFile(name string) ([]byte, error) {
+	f, err := fs.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+	//return nil, fmt.Errorf("RadFile() not implemented for XFS")
 }
 
 // Type returns the filesystem type
@@ -407,6 +419,10 @@ func (fs *FileSystem) readInode(inum uint64) (*Inode, error) {
 	return inode, nil
 }
 
+func (fs *FileSystem) Open(p string) (iofs.File, error) {
+	return nil, fmt.Errorf("Open() not implemented for XFS")
+}
+
 // OpenFile opens a file or directory
 func (fs *FileSystem) OpenFile(p string, flag int) (filesystem.File, error) {
 	// Normalize path
@@ -443,7 +459,7 @@ func (fs *FileSystem) OpenFile(p string, flag int) (filesystem.File, error) {
 }
 
 // ReadDir reads directory entries
-func (fs *FileSystem) ReadDir(p string) ([]os.FileInfo, error) {
+func (fs *FileSystem) ReadDir(p string) ([]os.DirEntry, error) {
 	p = filepath.Clean(p)
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
@@ -463,9 +479,9 @@ func (fs *FileSystem) ReadDir(p string) ([]os.FileInfo, error) {
 		return nil, err
 	}
 
-	var result []os.FileInfo
+	var result []os.DirEntry
 	for _, entry := range entries {
-		result = append(result, entry)
+		result = append(result, iofs.FileInfoToDirEntry(entry))
 	}
 
 	return result, nil
@@ -1079,7 +1095,7 @@ func (fs *FileSystem) SetLabel(label string) error {
 	return fmt.Errorf("XFS chown not supported (read-only)")
 }
 
-func (fs *FileSystem) Stat(path string) (*FileInfo, error) {
+func (fs *FileSystem) Stat(path string) (iofs.FileInfo, error) {
 	path = filepath.Clean(path)
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
@@ -1116,4 +1132,9 @@ func (fs *FileSystem) Stat(path string) (*FileInfo, error) {
 			//Ctim: inode.Ctime,
 		},
 	}, nil
+}
+
+func (fs *FileSystem) Chtimes(p string, ctime, atime, mtime time.Time) error {
+	// TODO
+	return fmt.Errorf("Chtimes not implemented in XFS")
 }

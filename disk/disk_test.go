@@ -8,6 +8,7 @@ package disk_test
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -123,7 +124,7 @@ func TestPartition(t *testing.T) {
 		partitionEnd := partitionSize + partitionStart - 1
 		table := &gpt.Table{
 			Partitions: []*gpt.Partition{
-				{Start: partitionStart, End: partitionEnd, Type: gpt.EFISystemPartition, Name: "EFI System"},
+				{Index: 1, Start: partitionStart, End: partitionEnd, Type: gpt.EFISystemPartition, Name: "EFI System"},
 			},
 			LogicalSectorSize: sectorSize,
 		}
@@ -186,7 +187,7 @@ func TestWritePartitionContents(t *testing.T) {
 		partitionEnd := partitionStart + partitionSize/512 - 1
 		table := &gpt.Table{
 			Partitions: []*gpt.Partition{
-				{Start: 2048, End: partitionEnd, Type: gpt.EFISystemPartition, Name: "EFI System"},
+				{Index: 1, Start: 2048, End: partitionEnd, Type: gpt.EFISystemPartition, Name: "EFI System"},
 			},
 			LogicalSectorSize: 512,
 		}
@@ -197,9 +198,9 @@ func TestWritePartitionContents(t *testing.T) {
 			err       error
 		}{
 			// various invalid table scenarios
-			{"no table, write to partition 1", nil, 1, fmt.Errorf("cannot write contents of a partition on a disk without a partition table")},
-			{"no table, write to partition 0", nil, 0, fmt.Errorf("cannot write contents of a partition on a disk without a partition table")},
-			{"no table, write to partition -1", nil, -1, fmt.Errorf("cannot write contents of a partition on a disk without a partition table")},
+			{"no table, write to partition 1", nil, 1, fmt.Errorf("no partition table found on disk")},
+			{"no table, write to partition 0", nil, 0, fmt.Errorf("no partition table found on disk")},
+			{"no table, write to partition -1", nil, -1, fmt.Errorf("no partition table found on disk")},
 			{"good table, write to partition 1", table, 1, nil},
 		}
 		for _, t2 := range tests {
@@ -257,7 +258,7 @@ func TestReadPartitionContents(t *testing.T) {
 		partitionSize := uint64(1000)
 		table := &gpt.Table{
 			Partitions: []*gpt.Partition{
-				{Start: partitionStart, Size: partitionSize * 512, Type: gpt.LinuxFilesystem},
+				{Index: 1, Start: partitionStart, Size: partitionSize * 512, Type: gpt.LinuxFilesystem},
 			},
 			LogicalSectorSize: 512,
 		}
@@ -268,12 +269,12 @@ func TestReadPartitionContents(t *testing.T) {
 			err       error
 		}{
 			// various invalid table scenarios
-			{"no table, partition 1", nil, 1, fmt.Errorf("cannot read contents of a partition on a disk without a partition table")},
-			{"no table, partition 0", nil, 0, fmt.Errorf("cannot read contents of a partition on a disk without a partition table")},
-			{"no table, partition -1", nil, -1, fmt.Errorf("cannot read contents of a partition on a disk without a partition table")},
+			{"no table, partition 1", nil, 1, fmt.Errorf("no partition table found on disk")},
+			{"no table, partition 0", nil, 0, fmt.Errorf("no partition table found on disk")},
+			{"no table, partition -1", nil, -1, fmt.Errorf("no partition table found on disk")},
 			// invalid partition number scenarios
-			{"good table, partition -1", table, -1, fmt.Errorf("cannot read contents of a partition without specifying a partition")},
-			{"good table, partition greater than max", table, 5, fmt.Errorf("cannot read contents of partition %d which is greater than max partition %d", 5, 1)},
+			{"good table, partition -1", table, -1, fmt.Errorf("requested partition -1 not found")},
+			{"good table, partition greater than max", table, 5, fmt.Errorf("requested partition %d not found", 5)},
 			{"good table, good partition 1", table, 1, nil},
 		}
 		for _, t2 := range tests {
@@ -324,7 +325,7 @@ func TestReadPartitionContents(t *testing.T) {
 		partitionSize := uint32(1000)
 		table := &mbr.Table{
 			Partitions: []*mbr.Partition{
-				{Start: partitionStart, Size: partitionSize},
+				{Index: 1, Start: partitionStart, Size: partitionSize},
 			},
 			LogicalSectorSize: 512,
 		}
@@ -335,12 +336,12 @@ func TestReadPartitionContents(t *testing.T) {
 			err       error
 		}{
 			// various invalid table scenarios
-			{"no table partition 1", nil, 1, fmt.Errorf("cannot read contents of a partition on a disk without a partition table")},
-			{"no table partition 0", nil, 0, fmt.Errorf("cannot read contents of a partition on a disk without a partition table")},
-			{"no table partition -1", nil, -1, fmt.Errorf("cannot read contents of a partition on a disk without a partition table")},
+			{"no table partition 1", nil, 1, fmt.Errorf("no partition table found on disk")},
+			{"no table partition 0", nil, 0, fmt.Errorf("no partition table found on disk")},
+			{"no table partition -1", nil, -1, fmt.Errorf("no partition table found on disk")},
 			// invalid partition number scenarios
-			{"valid table partition -1", table, -1, fmt.Errorf("cannot read contents of a partition without specifying a partition")},
-			{"valid table partition 5", table, 5, fmt.Errorf("cannot read contents of partition %d which is greater than max partition %d", 5, 1)},
+			{"valid table partition -1", table, -1, fmt.Errorf("requested partition -1 not found")},
+			{"valid table partition 5", table, 5, fmt.Errorf("requested partition %d not found", 5)},
 			{"valid table partition 1", table, 1, nil},
 		}
 		for _, t2 := range tests {
@@ -471,7 +472,7 @@ func TestCreateFilesystem(t *testing.T) {
 		partitionSize := uint32(20480)
 		table := &mbr.Table{
 			Partitions: []*mbr.Partition{
-				{Start: partitionStart, Size: partitionSize},
+				{Index: 1, Start: partitionStart, Size: partitionSize},
 			},
 			LogicalSectorSize: 512,
 		}
@@ -521,9 +522,9 @@ func TestGetFilesystem(t *testing.T) {
 			LogicalBlocksize:  512,
 			PhysicalBlocksize: 512,
 		}
-		expected := fmt.Errorf("cannot read filesystem on a partition without a partition table")
 		fs, err := d.GetFilesystem(1)
-		if err == nil || err.Error() != expected.Error() {
+		expected := &disk.NoPartitionTableError{}
+		if err == nil || !errors.Is(err, expected) {
 			t.Errorf("Mismatched error: actual %v expected %v", err, expected)
 		}
 		if fs != nil {
@@ -596,7 +597,7 @@ func TestGetFilesystem(t *testing.T) {
 		partitionSize := uint32(20480)
 		table := &mbr.Table{
 			Partitions: []*mbr.Partition{
-				{Start: partitionStart, Size: partitionSize},
+				{Index: 1, Start: partitionStart, Size: partitionSize},
 			},
 			LogicalSectorSize: 512,
 		}

@@ -16,6 +16,16 @@ type FileInfo struct {
 	size    int64
 	isDir   bool
 	Stat    *syscall.Stat_t
+	sys     *StatT
+}
+
+type StatT struct {
+	UID   uint32
+	GID   uint32
+	Major uint32
+	Minor uint32
+	Ino   uint32
+	Nlink uint16
 }
 
 // IsDir abbreviation for Mode().IsDir()
@@ -88,4 +98,5 @@ func modeToFileMode(mode uint16) fs.FileMode {
 	m |= fs.FileMode(mode & 0x01FF)
 
 	return m
+	//return fi.sys
 }

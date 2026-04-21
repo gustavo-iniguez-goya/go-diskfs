@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-test/deep"
 	"github.com/gustavo-iniguez-goya/go-diskfs/partition/gpt"
 	"github.com/gustavo-iniguez-goya/go-diskfs/testhelper"
 )
@@ -155,8 +156,12 @@ func TestTableRead(t *testing.T) {
 			t.Errorf("returned error %v instead of nil", err)
 		}
 		expected := gpt.GetValidTable()
-		if table == nil || !table.Equal(expected) {
-			t.Errorf("actual table was %v instead of expected %v", table, expected)
+		if table == nil {
+			t.Errorf("returned nil instead of table")
+		}
+
+		if diff := deep.Equal(table, expected); diff != nil {
+			t.Errorf("table mismatch: %v", diff)
 		}
 	})
 }
@@ -277,7 +282,7 @@ func TestTableWrite(t *testing.T) {
 		name := "EFI System Tester"
 		table := &gpt.Table{
 			Partitions: []*gpt.Partition{
-				{Start: partitionStart, End: partitionEnd, Type: gpt.EFISystemPartition, Name: name},
+				{Index: 1, Start: partitionStart, End: partitionEnd, Type: gpt.EFISystemPartition, Name: name},
 			},
 			LogicalSectorSize: sectorSize,
 			ProtectiveMBR:     true,

@@ -3,7 +3,7 @@ package squashfs
 // This file contains all of the constants for running tests. These are generated from
 // the following:
 // 1. Run the testdata/buildsqs.sh script, which generates file.sqs and file_uncompressed.sqs
-// 2. Run github.com/diskfs/squashfs-utils on the file
+// 2. Run github.com/gustavo-iniguez-goya/squashfs-utils on the file
 // 3. Take the relevant sizes, locations and inodes and use them here.
 
 import (
@@ -222,6 +222,7 @@ func testGetFilesystemRoot() []*directoryEntry {
 	return []*directoryEntry{
 		{isSubdirectory: true, name: "foo", size: 9949, modTime: modTime, mode: 0o755},
 		{isSubdirectory: true, name: "zero", size: 32, modTime: modTime, mode: 0o755},
+		{isSubdirectory: true, name: "a", size: 32, modTime: modTime, mode: 0o755},
 		{isSubdirectory: true, name: "random", size: 32, modTime: modTime, mode: 0o755},
 		{isSubdirectory: false, name: "emptylink", size: 0, modTime: modTime, mode: 0o777},
 		{isSubdirectory: false, name: "goodlink", size: 0, modTime: modTime, mode: 0o777},

@@ -18,6 +18,7 @@ import (
 
 const (
 	imgFile             = "testdata/dist/ext4.img"
+	imgFileOffset       = "testdata/dist/ext4-offset.img"
 	fooDirFile          = "testdata/dist/foo_dir.txt"
 	testGDTFile         = "testdata/dist/gdt.bin"
 	rootDirFile         = "testdata/dist/root_dir.txt"
@@ -30,7 +31,14 @@ const (
 // TestMain sets up the test environment and runs the tests
 func TestMain(m *testing.M) {
 	// Check and generate artifacts if necessary
+	needGen := false
 	if _, err := os.Stat(imgFile); os.IsNotExist(err) {
+		needGen = true
+	}
+	if _, err := os.Stat(imgFileOffset); os.IsNotExist(err) {
+		needGen = true
+	}
+	if needGen {
 		// Run the genartifacts.sh script
 		cmd := exec.Command("sh", "buildimg.sh")
 		cmd.Stdout = os.Stdout
@@ -648,7 +656,7 @@ func testGetValidSuperblockAndGDTs() (sb *superblock, gd []groupDescriptor, supe
 		return nil, nil, nil, nil, fmt.Errorf("Failed to parse journal UUID: %v", err)
 	}
 	sb.journalSuperblockUUID = &juuid
-	sb.clusterSize = 1
+	sb.clusterSize = 1024
 
 	// lifetime writes in KB is done separately, because debug -R "stats" and dumpe2fs only
 	// round it out

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-test/deep"
 	"github.com/gustavo-iniguez-goya/go-diskfs/testhelper"
 )
 
@@ -23,7 +24,7 @@ func TestFromBytes(t *testing.T) {
 	t.Run("Short byte slice", func(t *testing.T) {
 		b := make([]byte, PartitionEntrySize-1)
 		_, _ = rand.Read(b)
-		partition, err := partitionFromBytes(b, 2048, 2048)
+		partition, err := partitionFromBytes(1, b, 2048, 2048)
 		if partition != nil {
 			t.Error("should return nil partition")
 		}
@@ -38,7 +39,7 @@ func TestFromBytes(t *testing.T) {
 	t.Run("Long byte slice", func(t *testing.T) {
 		b := make([]byte, PartitionEntrySize+1)
 		_, _ = rand.Read(b)
-		partition, err := partitionFromBytes(b, 2048, 2048)
+		partition, err := partitionFromBytes(1, b, 2048, 2048)
 		if partition != nil {
 			t.Error("should return nil partition")
 		}
@@ -55,7 +56,7 @@ func TestFromBytes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unable to read test fixture file %s: %v", gptPartitionFile, err)
 		}
-		partition, err := partitionFromBytes(b, 0, 0)
+		partition, err := partitionFromBytes(1, b, 0, 0)
 		if partition == nil {
 			t.Error("should not return nil partition")
 		}
@@ -64,6 +65,7 @@ func TestFromBytes(t *testing.T) {
 		}
 		// check out data
 		expected := Partition{
+			Index:      1,
 			Start:      2048,
 			End:        3048,
 			Name:       "EFI System",
@@ -71,8 +73,8 @@ func TestFromBytes(t *testing.T) {
 			Attributes: 0,
 			Type:       EFISystemPartition,
 		}
-		if !partition.Equal(&expected) {
-			t.Errorf("actual partition was %v instead of expected %v", partition, expected)
+		if diff := deep.Equal(partition, &expected); diff != nil {
+			t.Errorf("partition mismatch: %v", diff)
 		}
 	})
 }
@@ -182,7 +184,7 @@ func TestInitEntry(t *testing.T) {
 			Attributes: 0,
 			Type:       EFISystemPartition,
 		}
-		err := p.initEntry(512, 2048)
+		err := p.initEntry(512)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -201,7 +203,7 @@ func TestInitEntry(t *testing.T) {
 			Attributes: 0,
 			Type:       EFISystemPartition,
 		}
-		err := p.initEntry(512, 2048)
+		err := p.initEntry(512)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -220,7 +222,7 @@ func TestInitEntry(t *testing.T) {
 			Attributes: 0,
 			Type:       EFISystemPartition,
 		}
-		err := p.initEntry(512, 2048)
+		err := p.initEntry(512)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -242,7 +244,7 @@ func TestInitEntry(t *testing.T) {
 			Attributes: 0,
 			Type:       EFISystemPartition,
 		}
-		err := p.initEntry(512, 2048)
+		err := p.initEntry(512)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -255,7 +257,6 @@ func TestInitEntry(t *testing.T) {
 	})
 
 	t.Run("only size", func(t *testing.T) {
-		var starting uint64 = 2048
 		p := Partition{
 			Start:      0,
 			End:        0,
@@ -265,26 +266,13 @@ func TestInitEntry(t *testing.T) {
 			Attributes: 0,
 			Type:       EFISystemPartition,
 		}
-		err := p.initEntry(512, starting)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if p.End == 0 {
-			t.Errorf("Did not reset end even though 0")
-		}
-		if p.Start == 0 {
-			t.Errorf("Did not reset start even though 0")
-		}
-		if p.End != end {
-			t.Errorf("end set to %d instead of %d", p.End, end)
-		}
-		if p.Start != start {
-			t.Errorf("start set to %d instead of %d", p.Start, start)
+		err := p.initEntry(512)
+		if err == nil {
+			t.Errorf("expected error got none")
 		}
 	})
 
 	t.Run("mismatched sizes", func(t *testing.T) {
-		var starting uint64 = 2048
 		p := Partition{
 			Start:      start,
 			End:        end,
@@ -294,7 +282,7 @@ func TestInitEntry(t *testing.T) {
 			Attributes: 0,
 			Type:       EFISystemPartition,
 		}
-		err := p.initEntry(512, starting)
+		err := p.initEntry(512)
 		if err == nil {
 			t.Fatal("returned unexpected nil error")
 		}

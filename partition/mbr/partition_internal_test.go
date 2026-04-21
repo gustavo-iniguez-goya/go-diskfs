@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gustavo-iniguez-goya/go-diskfs/partition/part"
 	"github.com/gustavo-iniguez-goya/go-diskfs/testhelper"
 )
 
@@ -24,7 +25,7 @@ func TestFromBytes(t *testing.T) {
 	t.Run("Short byte slice", func(t *testing.T) {
 		b := make([]byte, partitionEntrySize-1)
 		_, _ = rand.Read(b)
-		partition, err := partitionFromBytes(b, logicalSectorSize, physicalSectorSize)
+		partition, err := partitionFromBytes(1, b, logicalSectorSize, physicalSectorSize)
 		if partition != nil {
 			t.Error("should return nil partition")
 		}
@@ -39,7 +40,7 @@ func TestFromBytes(t *testing.T) {
 	t.Run("Long byte slice", func(t *testing.T) {
 		b := make([]byte, partitionEntrySize+1)
 		_, _ = rand.Read(b)
-		partition, err := partitionFromBytes(b, logicalSectorSize, physicalSectorSize)
+		partition, err := partitionFromBytes(1, b, logicalSectorSize, physicalSectorSize)
 		if partition != nil {
 			t.Error("should return nil partition")
 		}
@@ -55,7 +56,7 @@ func TestFromBytes(t *testing.T) {
 		b := make([]byte, partitionEntrySize)
 		_, _ = rand.Read(b)
 		b[0] = 0x67
-		partition, err := partitionFromBytes(b, logicalSectorSize, physicalSectorSize)
+		partition, err := partitionFromBytes(1, b, logicalSectorSize, physicalSectorSize)
 		if partition != nil {
 			t.Error("should return nil partition")
 		}
@@ -72,7 +73,7 @@ func TestFromBytes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unable to read test fixture file %s: %v", mbrPartitionFile, err)
 		}
-		partition, err := partitionFromBytes(b, logicalSectorSize, physicalSectorSize)
+		partition, err := partitionFromBytes(1, b, logicalSectorSize, physicalSectorSize)
 		if partition == nil {
 			t.Error("should not return nil partition")
 		}
@@ -218,7 +219,6 @@ func TestWriteContents(t *testing.T) {
 		}
 		var b bytes.Buffer
 		reader := bufio.NewReader(&b)
-		expected := "write 0 bytes to partition "
 		f := &testhelper.FileImpl{}
 		written, err := partition.WriteContents(f, reader)
 		if written != 0 {
@@ -227,8 +227,9 @@ func TestWriteContents(t *testing.T) {
 		if err == nil {
 			t.Errorf("returned nil error instead of actual errors")
 		}
-		if !strings.HasPrefix(err.Error(), expected) {
-			t.Errorf("error type %s instead of expected %s", err.Error(), expected)
+		var ierr *part.IncompletePartitionWriteError
+		if !errors.As(err, &ierr) {
+			t.Errorf("expected IncompletePartitionWriteError, got %v", err)
 		}
 	})
 	t.Run("error writing file", func(t *testing.T) {

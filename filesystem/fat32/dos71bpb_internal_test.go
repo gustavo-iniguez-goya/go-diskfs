@@ -6,11 +6,13 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem/fat12"
 )
 
 func getValidDos71EBPB() *dos71EBPB {
 	return &dos71EBPB{
-		dos331BPB:             getValidDos331BPB(),
+		Dos331BPB:             getValidDos331BPB(),
 		sectorsPerFat:         fsInfo.sectorsPerFAT,
 		mirrorFlags:           0,
 		version:               0,
@@ -83,7 +85,7 @@ func TestDos71EBPBFromBytes(t *testing.T) {
 		size := uint16(511)
 		b := make([]byte, 25)
 		binary.LittleEndian.PutUint16(b[0:2], size)
-		bpb, err := dos331BPBFromBytes(b)
+		bpb, err := fat12.Dos331BPBFromBytes(b)
 		if err == nil {
 			t.Errorf("Did not return expected error")
 		}

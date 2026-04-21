@@ -7,32 +7,34 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/gustavo-iniguez-goya/go-diskfs/filesystem/fat12"
 )
 
-func getValidDos20BPB() *dos20BPB {
-	return &dos20BPB{
-		bytesPerSector:       512,
-		sectorsPerCluster:    1,
-		reservedSectors:      32,
-		fatCount:             2,
-		rootDirectoryEntries: 0,
-		totalSectors:         0x5000,
-		mediaType:            0xf8,
-		sectorsPerFat:        0,
+func getValidDos20BPB() *fat12.Dos20BPB {
+	return &fat12.Dos20BPB{
+		BytesPerSector:       512,
+		SectorsPerCluster:    1,
+		ReservedSectors:      32,
+		FatCount:             2,
+		RootDirectoryEntries: 0,
+		TotalSectors:         0x5000,
+		MediaType:            0xf8,
+		SectorsPerFat:        0,
 	}
 }
 
 func TestDos20BPBFromBytes(t *testing.T) {
 	t.Run("mismatched length", func(t *testing.T) {
 		b := make([]byte, 12, 13)
-		bpb, err := dos20BPBFromBytes(b)
+		bpb, err := fat12.Dos20BPBFromBytes(b)
 		if err == nil {
 			t.Errorf("Did not return expected error")
 		}
 		if bpb != nil {
 			t.Fatalf("returned bpb was non-nil")
 		}
-		expected := "cannot read DOS 2.0 BPB from invalid byte slice"
+		expected := "cannot read DOS 2.0 BPB"
 		if !strings.HasPrefix(err.Error(), expected) {
 			t.Errorf("error type %s instead of expected %s", err.Error(), expected)
 		}
@@ -41,14 +43,14 @@ func TestDos20BPBFromBytes(t *testing.T) {
 		size := uint16(511)
 		b := make([]byte, 13)
 		binary.LittleEndian.PutUint16(b[0:2], size)
-		bpb, err := dos20BPBFromBytes(b)
+		bpb, err := fat12.Dos20BPBFromBytes(b)
 		if err == nil {
 			t.Errorf("Did not return expected error")
 		}
 		if bpb != nil {
 			t.Fatalf("returned bpb was non-nil")
 		}
-		expected := fmt.Sprintf("invalid sector size %d ", size)
+		expected := fmt.Sprintf("invalid sector size %d", size)
 		if !strings.HasPrefix(err.Error(), expected) {
 			t.Errorf("error type %s instead of expected %s", err.Error(), expected)
 		}
@@ -59,7 +61,7 @@ func TestDos20BPBFromBytes(t *testing.T) {
 			t.Fatalf("error reading test fixture data from %s: %v", Fat32File, err)
 		}
 		inputBytes := input[11:24]
-		bpb, err := dos20BPBFromBytes(inputBytes)
+		bpb, err := fat12.Dos20BPBFromBytes(inputBytes)
 		if err != nil {
 			t.Errorf("returned unexpected non-nil error: %v", err)
 		}
@@ -77,7 +79,7 @@ func TestDos20BPBFromBytes(t *testing.T) {
 
 func TestDos20BPBToBytes(t *testing.T) {
 	bpb := getValidDos20BPB()
-	b := bpb.toBytes()
+	b := bpb.ToBytes()
 	if b == nil {
 		t.Fatal("b was nil unexpectedly")
 	}
