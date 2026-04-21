@@ -33,6 +33,9 @@ const (
 	XFS_DINODE_FMT_BTREE   = 3
 	XFS_DINODE_FMT_UUID    = 4
 
+	// Inode flags2
+	XFS_DIFLAG2_BIGTIME = 0x08 // Use large timestamp format
+
 	// File types
 	S_IFMT   = 0170000
 	S_IFREG  = 0100000
@@ -271,6 +274,11 @@ func (fs *FileSystem) readExtentData(inode *Inode, offset int64, buf []byte) (in
 		startoff := int64((rec.L0 & 0x7FFFFFFFFFFFFFFF) >> 9)
 		startblock := ((rec.L0 & 0x1FF) << 43) | (rec.L1 >> 21)
 		blockcount := rec.L1 & 0x1FFFFF
+		
+		// Convert AG-relative block to absolute block
+		agno := startblock >> fs.sb.AGBlkLog
+		agbno := startblock & ((1 << fs.sb.AGBlkLog) - 1)
+		absStartBlock := agno*uint64(fs.sb.AGBlocks) + agbno
 
 		extentStartByte := startoff * int64(fs.blockSize)
 		extentEndByte := extentStartByte + int64(blockcount)*int64(fs.blockSize)
@@ -288,7 +296,7 @@ func (fs *FileSystem) readExtentData(inode *Inode, offset int64, buf []byte) (in
 
 		// Calculate where to read from this extent
 		offsetInExtent := currentOffset - extentStartByte
-		diskBlock := startblock + uint64(offsetInExtent/int64(fs.blockSize))
+		diskBlock := absStartBlock + uint64(offsetInExtent/int64(fs.blockSize))
 		offsetInBlock := offsetInExtent % int64(fs.blockSize)
 
 		// Read from this extent
@@ -512,12 +520,43 @@ func (fs *FileSystem) readInode(inum uint64) (*Inode, error) {
 	copy(inode.Padding[:], buf[24:30])
 	inode.FlushIter = binary.BigEndian.Uint16(buf[30:32])
 
-	inode.Atime.Sec = int32(binary.BigEndian.Uint32(buf[32:36]))
-	inode.Atime.Nsec = int32(binary.BigEndian.Uint32(buf[36:40]))
-	inode.Mtime.Sec = int32(binary.BigEndian.Uint32(buf[40:44]))
-	inode.Mtime.Nsec = int32(binary.BigEndian.Uint32(buf[44:48]))
-	inode.Ctime.Sec = int32(binary.BigEndian.Uint32(buf[48:52]))
-	inode.Ctime.Nsec = int32(binary.BigEndian.Uint32(buf[52:56]))
+	// Read timestamps - need to check bigtime flag first for V3+ inodes
+	// For V3+ inodes, read Flags2 early to check for bigtime
+	var isBigtime bool
+	if len(buf) >= 128 {
+		// Flags2 is at offset 120 for V3 inodes
+		flags2 := binary.BigEndian.Uint64(buf[120:128])
+		isBigtime = (flags2 & XFS_DIFLAG2_BIGTIME) != 0
+	}
+
+	if isBigtime {
+		// XFS bigtime encodes time as nanoseconds in a special format:
+		// The value stored is: (timestamp_seconds - old_epoch_offset) * 1e9 + nanoseconds
+		// where old_epoch_offset is the minimum value of a signed 32-bit timestamp
+		// This extends the range by starting from INT32_MIN instead of 0
+		const bigtimeEpochOffset = -2147483648 // INT32_MIN
+		
+		atimeNs := int64(binary.BigEndian.Uint64(buf[32:40]))
+		mtimeNs := int64(binary.BigEndian.Uint64(buf[40:48]))
+		ctimeNs := int64(binary.BigEndian.Uint64(buf[48:56]))
+		
+		// Convert bigtime nanoseconds back to Unix time
+		// timestamp_seconds = (bigtime_ns / 1e9) + INT32_MIN
+		inode.Atime.Sec = int32((atimeNs / 1000000000) + bigtimeEpochOffset)
+		inode.Atime.Nsec = int32(atimeNs % 1000000000)
+		inode.Mtime.Sec = int32((mtimeNs / 1000000000) + bigtimeEpochOffset)
+		inode.Mtime.Nsec = int32(mtimeNs % 1000000000)
+		inode.Ctime.Sec = int32((ctimeNs / 1000000000) + bigtimeEpochOffset)
+		inode.Ctime.Nsec = int32(ctimeNs % 1000000000)
+	} else {
+		// Standard format: separate 32-bit seconds and nanoseconds
+		inode.Atime.Sec = int32(binary.BigEndian.Uint32(buf[32:36]))
+		inode.Atime.Nsec = int32(binary.BigEndian.Uint32(buf[36:40]))
+		inode.Mtime.Sec = int32(binary.BigEndian.Uint32(buf[40:44]))
+		inode.Mtime.Nsec = int32(binary.BigEndian.Uint32(buf[44:48]))
+		inode.Ctime.Sec = int32(binary.BigEndian.Uint32(buf[48:52]))
+		inode.Ctime.Nsec = int32(binary.BigEndian.Uint32(buf[52:56]))
+	}
 
 	inode.Size = int64(binary.BigEndian.Uint64(buf[56:64]))
 	inode.NBlocks = int64(binary.BigEndian.Uint64(buf[64:72]))
@@ -837,7 +876,12 @@ func (fs *FileSystem) readBlockDir(inode *Inode, inum uint64) ([]*FileInfo, erro
 		return nil, fmt.Errorf("invalid extent")
 	}
 
-	blockOffset := fs.start + int64(startblock*uint64(fs.blockSize))
+	// Convert AG-relative block to absolute block
+	agno := startblock >> fs.sb.AGBlkLog
+	agbno := startblock & ((1 << fs.sb.AGBlkLog) - 1)
+	absBlock := agno*uint64(fs.sb.AGBlocks) + agbno
+	
+	blockOffset := fs.start + int64(absBlock*uint64(fs.blockSize))
 	dirBlock := make([]byte, fs.blockSize)
 
 	if _, err := fs.backend.ReadAt(dirBlock, blockOffset); err != nil {
