@@ -192,13 +192,155 @@ func (f *File) Read(p []byte) (int, error) {
 	if f.isDir {
 		return 0, fmt.Errorf("cannot read from directory")
 	}
-	// TODO: implement file data reading
-	return 0, fmt.Errorf("file reading not yet implemented")
+	if f.offset >= f.inode.Size {
+		return 0, io.EOF
+	}
+
+	// Calculate how much to read
+	remaining := f.inode.Size - f.offset
+	toRead := int64(len(p))
+	if toRead > remaining {
+		toRead = remaining
+	}
+
+	// Read the data
+	n, err := f.fs.readFileData(f.inode, f.offset, p[:toRead])
+	if err != nil {
+		return 0, err
+	}
+
+	f.offset += int64(n)
+	return n, nil
 }
 
 // Write writes to the file
 func (f *File) Write(p []byte) (int, error) {
 	return 0, fmt.Errorf("XFS write not supported (read-only)")
+}
+
+// readFileData reads file data from inode at given offset
+func (fs *FileSystem) readFileData(inode *Inode, offset int64, buf []byte) (int, error) {
+	if offset >= inode.Size {
+		return 0, io.EOF
+	}
+
+	// Handle different inode formats
+	switch inode.Format {
+	case XFS_DINODE_FMT_LOCAL:
+		// Data is stored inline in the inode
+		if offset >= int64(len(inode.DataFork)) {
+			return 0, io.EOF
+		}
+		n := copy(buf, inode.DataFork[offset:])
+		return n, nil
+
+	case XFS_DINODE_FMT_EXTENTS:
+		// Data is in extents
+		return fs.readExtentData(inode, offset, buf)
+
+	case XFS_DINODE_FMT_BTREE:
+		return 0, fmt.Errorf("B+tree file format not yet implemented")
+
+	default:
+		return 0, fmt.Errorf("unsupported file format %d", inode.Format)
+	}
+}
+
+// readExtentData reads data from extent-based files
+func (fs *FileSystem) readExtentData(inode *Inode, offset int64, buf []byte) (int, error) {
+	if inode.Nextents == 0 {
+		return 0, io.EOF
+	}
+
+	totalRead := 0
+	currentOffset := offset
+
+	// Parse each extent
+	for i := int32(0); i < inode.Nextents && totalRead < len(buf); i++ {
+		extentOffset := i * 16
+		if extentOffset+16 > int32(len(inode.DataFork)) {
+			break
+		}
+
+		rec := BMBTRec{
+			L0: binary.BigEndian.Uint64(inode.DataFork[extentOffset : extentOffset+8]),
+			L1: binary.BigEndian.Uint64(inode.DataFork[extentOffset+8 : extentOffset+16]),
+		}
+
+		// Decode extent record
+		startoff := int64((rec.L0 & 0x7FFFFFFFFFFFFFFF) >> 9)
+		startblock := ((rec.L0 & 0x1FF) << 43) | (rec.L1 >> 21)
+		blockcount := rec.L1 & 0x1FFFFF
+
+		extentStartByte := startoff * int64(fs.blockSize)
+		extentEndByte := extentStartByte + int64(blockcount)*int64(fs.blockSize)
+
+		// Check if this extent contains data we need
+		if currentOffset >= extentEndByte {
+			continue
+		}
+
+		if currentOffset < extentStartByte {
+			// There's a gap - this shouldn't happen in regular files
+			// but we'll handle it by skipping
+			continue
+		}
+
+		// Calculate where to read from this extent
+		offsetInExtent := currentOffset - extentStartByte
+		diskBlock := startblock + uint64(offsetInExtent/int64(fs.blockSize))
+		offsetInBlock := offsetInExtent % int64(fs.blockSize)
+
+		// Read from this extent
+		readBuf := buf[totalRead:]
+		maxRead := int64(len(readBuf))
+		extentRemaining := extentEndByte - currentOffset
+		if maxRead > extentRemaining {
+			maxRead = extentRemaining
+		}
+
+		// If we're reading from the middle of a block, we need to read the whole block first
+		if offsetInBlock != 0 || maxRead < int64(fs.blockSize) {
+			// Read block by block when not aligned
+			for maxRead > 0 {
+				blockBuf := make([]byte, fs.blockSize)
+				blockOffset := fs.start + int64(diskBlock)*int64(fs.blockSize)
+
+				if _, err := fs.backend.ReadAt(blockBuf, blockOffset); err != nil {
+					return totalRead, err
+				}
+
+				copyStart := offsetInBlock
+				copyEnd := int64(fs.blockSize)
+				if copyEnd-copyStart > maxRead {
+					copyEnd = copyStart + maxRead
+				}
+
+				n := copy(readBuf, blockBuf[copyStart:copyEnd])
+				totalRead += n
+				readBuf = readBuf[n:]
+				currentOffset += int64(n)
+				maxRead -= int64(n)
+				diskBlock++
+				offsetInBlock = 0
+			}
+		} else {
+			// Aligned read - can read directly
+			blockOffset := fs.start + int64(diskBlock)*int64(fs.blockSize)
+			n, err := fs.backend.ReadAt(readBuf[:maxRead], blockOffset)
+			if err != nil && err != io.EOF {
+				return totalRead, err
+			}
+			totalRead += n
+			currentOffset += int64(n)
+		}
+	}
+
+	if totalRead == 0 && offset < inode.Size {
+		return 0, fmt.Errorf("no data read from extents")
+	}
+
+	return totalRead, nil
 }
 
 // Seek sets the offset for the next Read or Write
