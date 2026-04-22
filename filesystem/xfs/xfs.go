@@ -21,6 +21,12 @@ import (
 )
 
 const (
+	// Logical block offset where leaf/node blocks start in dir3 format
+	XFS_DIR2_LEAF_OFFSET = 0x80000000
+	XFS_DIR2_FREE_OFFSET = 0xC0000000
+)
+
+const (
 	XFS_SB_MAGIC     = 0x58465342 // "XFSB"
 	XFS_SB_VERSION_5 = 0x0005
 	XFS_DINODE_MAGIC = 0x494e     // "IN"
@@ -274,11 +280,6 @@ func (fs *FileSystem) readExtentData(inode *Inode, offset int64, buf []byte) (in
 		startoff := int64((rec.L0 & 0x7FFFFFFFFFFFFFFF) >> 9)
 		startblock := ((rec.L0 & 0x1FF) << 43) | (rec.L1 >> 21)
 		blockcount := rec.L1 & 0x1FFFFF
-		
-		// Convert AG-relative block to absolute block
-		agno := startblock >> fs.sb.AGBlkLog
-		agbno := startblock & ((1 << fs.sb.AGBlkLog) - 1)
-		absStartBlock := agno*uint64(fs.sb.AGBlocks) + agbno
 
 		extentStartByte := startoff * int64(fs.blockSize)
 		extentEndByte := extentStartByte + int64(blockcount)*int64(fs.blockSize)
@@ -296,7 +297,7 @@ func (fs *FileSystem) readExtentData(inode *Inode, offset int64, buf []byte) (in
 
 		// Calculate where to read from this extent
 		offsetInExtent := currentOffset - extentStartByte
-		diskBlock := absStartBlock + uint64(offsetInExtent/int64(fs.blockSize))
+		diskBlock := startblock + uint64(offsetInExtent/int64(fs.blockSize))
 		offsetInBlock := offsetInExtent % int64(fs.blockSize)
 
 		// Read from this extent
@@ -488,10 +489,16 @@ func (fs *FileSystem) readSuperblock() error {
 
 // readInode reads an inode from disk
 func (fs *FileSystem) readInode(inum uint64) (*Inode, error) {
-	agno := inum / uint64(fs.sb.AGBlocks*uint32(fs.sb.Inopblock))
-	agino := inum % uint64(fs.sb.AGBlocks*uint32(fs.sb.Inopblock))
-	agbno := agino / uint64(fs.sb.Inopblock)
-	offset := agino % uint64(fs.sb.Inopblock)
+	// XFS inode numbers are structured as:
+	// | agno (high bits) | agbno | offset within block |
+	// The bit widths are AGBlkLog and InopbLog respectively.
+
+	inopbLog := uint64(fs.sb.InopbLog) // log2(inodes per block)
+	agBlkLog := uint64(fs.sb.AGBlkLog) // log2(blocks per AG)
+
+	offset := inum & ((1 << inopbLog) - 1)              // low InopbLog bits
+	agbno := (inum >> inopbLog) & ((1 << agBlkLog) - 1) // next AGBlkLog bits
+	agno := inum >> (inopbLog + agBlkLog)               // remaining high bits
 
 	blockno := agno*uint64(fs.sb.AGBlocks) + agbno
 	inodeOffset := fs.start + int64(blockno*uint64(fs.blockSize)) + int64(offset*uint64(fs.inodeSize))
@@ -535,11 +542,11 @@ func (fs *FileSystem) readInode(inum uint64) (*Inode, error) {
 		// where old_epoch_offset is the minimum value of a signed 32-bit timestamp
 		// This extends the range by starting from INT32_MIN instead of 0
 		const bigtimeEpochOffset = -2147483648 // INT32_MIN
-		
+
 		atimeNs := int64(binary.BigEndian.Uint64(buf[32:40]))
 		mtimeNs := int64(binary.BigEndian.Uint64(buf[40:48]))
 		ctimeNs := int64(binary.BigEndian.Uint64(buf[48:56]))
-		
+
 		// Convert bigtime nanoseconds back to Unix time
 		// timestamp_seconds = (bigtime_ns / 1e9) + INT32_MIN
 		inode.Atime.Sec = int32((atimeNs / 1000000000) + bigtimeEpochOffset)
@@ -863,32 +870,53 @@ func (fs *FileSystem) readBlockDir(inode *Inode, inum uint64) ([]*FileInfo, erro
 		return nil, fmt.Errorf("data fork too small for extent")
 	}
 
-	rec := BMBTRec{
-		L0: binary.BigEndian.Uint64(inode.DataFork[0:8]),
-		L1: binary.BigEndian.Uint64(inode.DataFork[8:16]),
+	var entries []*FileInfo
+
+	// Iterate over ALL extents in the data fork.
+	// Skip extents at logical offset >= XFS_DIR2_LEAF_OFFSET (leaf/free blocks).
+	for i := int32(0); i < inode.Nextents; i++ {
+		forkOff := i * 16
+		if forkOff+16 > int32(len(inode.DataFork)) {
+			break
+		}
+		rec := BMBTRec{
+			L0: binary.BigEndian.Uint64(inode.DataFork[forkOff : forkOff+8]),
+			L1: binary.BigEndian.Uint64(inode.DataFork[forkOff+8 : forkOff+16]),
+		}
+		startoff := (rec.L0 & 0x7FFFFFFFFFFFFFFF) >> 9
+		startblock := ((rec.L0 & 0x1FF) << 43) | (rec.L1 >> 21)
+		blockcount := rec.L1 & 0x1FFFFF
+
+		// Leaf/free extents live at high logical offsets — skip them.
+		if startoff >= XFS_DIR2_LEAF_OFFSET {
+			continue
+		}
+		if blockcount == 0 {
+			continue
+		}
+
+		agno := startblock >> uint64(fs.sb.AGBlkLog)
+		agbno := startblock & ((1 << uint64(fs.sb.AGBlkLog)) - 1)
+		absBlock := agno*uint64(fs.sb.AGBlocks) + agbno
+
+		// Read every filesystem block in this extent.
+		for b := uint64(0); b < blockcount; b++ {
+			blockOffset := fs.start + int64((absBlock+b)*uint64(fs.blockSize))
+			dirBlock := make([]byte, fs.blockSize)
+			if _, err := fs.backend.ReadAt(dirBlock, blockOffset); err != nil {
+				return nil, fmt.Errorf("reading dir block %d: %w", b, err)
+			}
+			blockEntries, err := fs.parseBlockDirData(dirBlock, inum)
+			if err != nil {
+				// Non-fatal: block might be a header-only or tail block
+				continue
+			}
+			entries = append(entries, blockEntries...)
+		}
 	}
 
-	startoff := (rec.L0 & 0x7FFFFFFFFFFFFFFF) >> 9
-	startblock := ((rec.L0 & 0x1FF) << 43) | (rec.L1 >> 21)
-	blockcount := rec.L1 & 0x1FFFFF
+	return entries, nil
 
-	if startoff != 0 || blockcount == 0 {
-		return nil, fmt.Errorf("invalid extent")
-	}
-
-	// Convert AG-relative block to absolute block
-	agno := startblock >> fs.sb.AGBlkLog
-	agbno := startblock & ((1 << fs.sb.AGBlkLog) - 1)
-	absBlock := agno*uint64(fs.sb.AGBlocks) + agbno
-	
-	blockOffset := fs.start + int64(absBlock*uint64(fs.blockSize))
-	dirBlock := make([]byte, fs.blockSize)
-
-	if _, err := fs.backend.ReadAt(dirBlock, blockOffset); err != nil {
-		return nil, err
-	}
-
-	return fs.parseBlockDirData(dirBlock, inum)
 }
 
 // parseBlockDirData parses directory data from a block
@@ -930,11 +958,25 @@ func (fs *FileSystem) parseBlockDirData(block []byte, dirInum uint64) ([]*FileIn
 			break
 		}
 
+		// Check for unused (hole) entry: freetag is 0xFFFF at the start,
+		// followed by a 2-byte length. Advance by that length and continue.
+		freetag := binary.BigEndian.Uint16(block[offset : offset+2])
+		if freetag == 0xFFFF {
+			if offset+4 > len(block) {
+				break
+			}
+			holeLen := int(binary.BigEndian.Uint16(block[offset+2 : offset+4]))
+			if holeLen < 8 || offset+holeLen > len(block) {
+				break
+			}
+			offset += holeLen
+			continue
+		}
+
 		ino := binary.BigEndian.Uint64(block[offset : offset+8])
 
 		// Check for unused entry markers
-		if ino == 0 || ino == 0xFFFFFFFFFFFFFFFF {
-			offset += 8
+		if ino == 0 {
 			continue
 		}
 
@@ -985,9 +1027,10 @@ func (fs *FileSystem) parseBlockDirData(block []byte, dirInum uint64) ([]*FileIn
 
 		entriesFound++
 
-		// Move to next entry (aligned to 4 bytes)
-		entrySize := 9 + namelen
-		padding := (4 - (entrySize & 3)) & 3
+		// XFS dir2 entry layout: ino(8) + namelen(1) + name(namelen) + ftype(1) + tag(2)
+		// The whole entry is padded to an 8-byte boundary.
+		entrySize := 8 + 1 + namelen + 1 + 2 // ino + namelen + name + ftype + tag
+		padding := (8 - (entrySize & 7)) & 7
 		offset += entrySize + padding
 	}
 
