@@ -32,6 +32,11 @@ const (
 	XFS_DINODE_MAGIC = 0x494e     // "IN"
 	XFS_CRC_SEED     = 0xFFFFFFFF // CRC32c seed for XFS
 
+	XFS_DIR3_DATA_MAGIC  = 0x58443344 // "XD3D" - V5 data block
+	XFS_DIR3_BLOCK_MAGIC = 0x58444233 // "XDB3" - V5 block directory
+	XFS_DIR2_BLOCK_MAGIC = 0x58443242 // "XD2B" - V4 block
+	XFS_DIR2_DATA_MAGIC  = 0x58443244 // "XD2D" - V4 data
+
 	// Inode formats
 	XFS_DINODE_FMT_DEV     = 0
 	XFS_DINODE_FMT_LOCAL   = 1
@@ -433,7 +438,7 @@ func (fs *FileSystem) ReadFile(name string) ([]byte, error) {
 
 // Type returns the filesystem type
 func (fs *FileSystem) Type() filesystem.Type {
-	return filesystem.Type(0x58465342) // XFS magic as type
+	return filesystem.Type(XFS_SB_MAGIC) // XFS magic as type
 }
 
 // readSuperblock reads and parses the superblock
@@ -931,16 +936,16 @@ func (fs *FileSystem) parseBlockDirData(block []byte, dirInum uint64) ([]*FileIn
 	var headerType string
 
 	// XFS directory block header magic numbers
-	if magic == 0x58443344 { // "XD3D" - V5 data block
+	if magic == XFS_DIR3_DATA_MAGIC { // "XD3D" - V5 data block
 		offset = 64
 		headerType = "XD3D (V5 data)"
-	} else if magic == 0x58444233 { // "XDB3" - V5 block directory
+	} else if magic == XFS_DIR3_BLOCK_MAGIC { // "XDB3" - V5 block directory
 		offset = 64
 		headerType = "XDB3 (V5 block)"
-	} else if magic == 0x58443242 { // "XD2B" - V4 block
+	} else if magic == XFS_DIR2_BLOCK_MAGIC { // "XD2B" - V4 block
 		offset = 16
 		headerType = "XD2B (V4 block)"
-	} else if magic == 0x58443244 { // "XD2D" - V4 data
+	} else if magic == XFS_DIR2_DATA_MAGIC { // "XD2D" - V4 data
 		offset = 16
 		headerType = "XD2D (V4 data)"
 	} else {
@@ -1046,9 +1051,338 @@ func (fs *FileSystem) Mkdir(p string) error {
 	return fmt.Errorf("XFS mkdir not supported (read-only)")
 }
 
-// Remove removes a file or directory (not supported - read-only)
+// Remove removes a file or directory
 func (fs *FileSystem) Remove(pathname string) error {
-	return fmt.Errorf("XFS remove not supported (read-only)")
+	pathname = filepath.Clean(pathname)
+	if !strings.HasPrefix(pathname, "/") {
+		pathname = "/" + pathname
+	}
+
+	// Cannot remove root
+	if pathname == "/" {
+		return fmt.Errorf("cannot remove root directory")
+	}
+
+	// Get parent directory and entry name
+	parentPath := filepath.Dir(pathname)
+	entryName := filepath.Base(pathname)
+
+	// Navigate to parent directory
+	parentInum, parentInode, err := fs.navigateToPath(parentPath)
+	if err != nil {
+		return fmt.Errorf("parent directory not found: %w", err)
+	}
+
+	if (parentInode.Mode & S_IFMT) != S_IFDIR {
+		return fmt.Errorf("parent is not a directory")
+	}
+
+	// Navigate to the target to get its inode
+	targetInum, targetInode, err := fs.navigateToPath(pathname)
+	if err != nil {
+		return fmt.Errorf("file not found: %w", err)
+	}
+
+	// Check if it's a directory
+	isDir := (targetInode.Mode & S_IFMT) == S_IFDIR
+
+	// If it's a directory, ensure it's empty
+	if isDir {
+		entries, err := fs.listDir(targetInum, targetInode)
+		if err != nil {
+			return fmt.Errorf("cannot list directory: %w", err)
+		}
+
+		// Directory should only have . and .. entries
+		if len(entries) > 2 {
+			return fmt.Errorf("directory not empty")
+		}
+	}
+
+	// Remove the entry from parent directory
+	if err := fs.removeDirectoryEntry(parentInum, parentInode, entryName, targetInum); err != nil {
+		return fmt.Errorf("failed to remove directory entry: %w", err)
+	}
+
+	// Decrement link count on target inode
+	if targetInode.NLink > 0 {
+		targetInode.NLink--
+	}
+
+	// If link count reaches 0, mark inode as free
+	if targetInode.NLink == 0 {
+		// Mark inode as deleted by setting mode to 0
+		targetInode.Mode = 0
+		targetInode.Size = 0
+		targetInode.Nextents = 0
+		targetInode.NBlocks = 0
+
+		// Update deletion time
+		now := time.Now()
+		targetInode.Ctime.Sec = int32(now.Unix())
+		targetInode.Ctime.Nsec = int32(now.Nanosecond())
+	}
+
+	// Write updated target inode
+	if err := fs.writeInode(targetInum, targetInode); err != nil {
+		return fmt.Errorf("failed to update target inode: %w", err)
+	}
+
+	// Update parent directory timestamps
+	now := time.Now()
+	parentInode.Mtime.Sec = int32(now.Unix())
+	parentInode.Mtime.Nsec = int32(now.Nanosecond())
+	parentInode.Ctime.Sec = int32(now.Unix())
+	parentInode.Ctime.Nsec = int32(now.Nanosecond())
+
+	// Write updated parent inode
+	if err := fs.writeInode(parentInum, parentInode); err != nil {
+		return fmt.Errorf("failed to update parent directory: %w", err)
+	}
+
+	return nil
+}
+
+// removeDirectoryEntry removes an entry from a directory
+func (fs *FileSystem) removeDirectoryEntry(parentInum uint64, parentInode *Inode, entryName string, targetInum uint64) error {
+	switch parentInode.Format {
+	case XFS_DINODE_FMT_LOCAL:
+		return fs.removeShortformDirEntry(parentInum, parentInode, entryName, targetInum)
+	case XFS_DINODE_FMT_EXTENTS:
+		return fs.removeBlockDirEntry(parentInum, parentInode, entryName, targetInum)
+	case XFS_DINODE_FMT_BTREE:
+		return fmt.Errorf("B+tree directory format not yet supported for deletion")
+	default:
+		return fmt.Errorf("unsupported directory format %d", parentInode.Format)
+	}
+}
+
+// removeShortformDirEntry removes an entry from a shortform directory
+func (fs *FileSystem) removeShortformDirEntry(parentInum uint64, parentInode *Inode, entryName string, targetInum uint64) error {
+	buf := parentInode.DataFork
+	if len(buf) < 6 {
+		return fmt.Errorf("directory data too short")
+	}
+
+	count := buf[0]
+	i8count := buf[1]
+
+	offset := 2
+	if i8count == 0 {
+		offset += 4 // parent inode (4 bytes)
+	} else {
+		offset += 8 // parent inode (8 bytes)
+	}
+
+	// Build new directory data without the target entry
+	newBuf := make([]byte, 0, len(buf))
+	newBuf = append(newBuf, buf[:offset]...) // Copy header and parent
+
+	newCount := count
+
+	for i := 0; i < int(count); i++ {
+		if offset+3 >= len(buf) {
+			break
+		}
+
+		entryStart := offset
+		namelen := int(buf[offset])
+		offset++
+		offset += 2 // skip offset field
+
+		if namelen == 0 || offset+namelen > len(buf) {
+			break
+		}
+
+		name := string(buf[offset : offset+namelen])
+		offset += namelen
+
+		if offset >= len(buf) {
+			break
+		}
+		offset++ // ftype
+
+		var ino uint64
+		if i8count == 0 {
+			if offset+4 > len(buf) {
+				break
+			}
+			ino = uint64(binary.BigEndian.Uint32(buf[offset : offset+4]))
+			offset += 4
+		} else {
+			if offset+8 > len(buf) {
+				break
+			}
+			ino = binary.BigEndian.Uint64(buf[offset : offset+8])
+			offset += 8
+		}
+
+		// If this is the entry to remove, skip it
+		if name == entryName && ino == targetInum {
+			newCount--
+			continue
+		}
+
+		// Copy this entry to new buffer
+		//entryLen := offset - entryStart
+		newBuf = append(newBuf, buf[entryStart:offset]...)
+	}
+
+	// Update count in new buffer
+	newBuf[0] = newCount
+
+	// Update parent inode's data fork
+	parentInode.DataFork = newBuf
+
+	// Recalculate size if needed
+	parentInode.Size = int64(len(newBuf))
+
+	// Write the updated parent inode
+	return fs.writeInode(parentInum, parentInode)
+}
+
+// removeBlockDirEntry removes an entry from a block format directory
+func (fs *FileSystem) removeBlockDirEntry(parentInum uint64, parentInode *Inode, entryName string, targetInum uint64) error {
+	if parentInode.Nextents == 0 {
+		return fmt.Errorf("directory has no extents")
+	}
+
+	// Iterate through extents to find and remove the entry
+	for i := int32(0); i < parentInode.Nextents; i++ {
+		forkOff := i * 16
+		if forkOff+16 > int32(len(parentInode.DataFork)) {
+			break
+		}
+
+		rec := BMBTRec{
+			L0: binary.BigEndian.Uint64(parentInode.DataFork[forkOff : forkOff+8]),
+			L1: binary.BigEndian.Uint64(parentInode.DataFork[forkOff+8 : forkOff+16]),
+		}
+
+		startoff := (rec.L0 & 0x7FFFFFFFFFFFFFFF) >> 9
+		startblock := ((rec.L0 & 0x1FF) << 43) | (rec.L1 >> 21)
+		blockcount := rec.L1 & 0x1FFFFF
+
+		// Skip leaf/free blocks
+		if startoff >= XFS_DIR2_LEAF_OFFSET {
+			continue
+		}
+		if blockcount == 0 {
+			continue
+		}
+
+		agno := startblock >> uint64(fs.sb.AGBlkLog)
+		agbno := startblock & ((1 << uint64(fs.sb.AGBlkLog)) - 1)
+		absBlock := agno*uint64(fs.sb.AGBlocks) + agbno
+
+		// Try each block in this extent
+		for b := uint64(0); b < blockcount; b++ {
+			blockOffset := fs.start + int64((absBlock+b)*uint64(fs.blockSize))
+			dirBlock := make([]byte, fs.blockSize)
+			if _, err := fs.backend.ReadAt(dirBlock, blockOffset); err != nil {
+				continue
+			}
+
+			// Try to remove entry from this block
+			modified, err := fs.removeEntryFromBlock(dirBlock, entryName, targetInum)
+			if err != nil {
+				continue
+			}
+
+			if modified {
+				// Write the modified block back
+				writableFile, err := fs.backend.Writable()
+				if err != nil {
+					return fmt.Errorf("backend not writable: %w", err)
+				}
+				_, err = writableFile.WriteAt(dirBlock, blockOffset)
+				return err
+			}
+		}
+	}
+
+	return fmt.Errorf("entry not found in directory blocks")
+}
+
+// removeEntryFromBlock removes an entry from a directory block
+func (fs *FileSystem) removeEntryFromBlock(block []byte, entryName string, targetInum uint64) (bool, error) {
+	if len(block) < 4 {
+		return false, fmt.Errorf("block too short")
+	}
+
+	magic := binary.BigEndian.Uint32(block[0:4])
+
+	var offset int
+	if magic == XFS_DIR3_DATA_MAGIC || magic == XFS_DIR3_BLOCK_MAGIC { // V5
+		offset = 64
+	} else if magic == XFS_DIR2_BLOCK_MAGIC || magic == XFS_DIR2_DATA_MAGIC { // V4
+		offset = 16
+	} else {
+		offset = 16
+	}
+
+	for offset < len(block)-8 {
+		if offset+8 > len(block) {
+			break
+		}
+
+		entryStart := offset
+
+		// Check for free tag
+		freetag := binary.BigEndian.Uint16(block[offset : offset+2])
+		if freetag == 0xFFFF {
+			if offset+4 > len(block) {
+				break
+			}
+			holeLen := int(binary.BigEndian.Uint16(block[offset+2 : offset+4]))
+			if holeLen < 8 || offset+holeLen > len(block) {
+				break
+			}
+			offset += holeLen
+			continue
+		}
+
+		ino := binary.BigEndian.Uint64(block[offset : offset+8])
+		if ino == 0 {
+			continue
+		}
+
+		if offset+9 > len(block) {
+			break
+		}
+
+		namelen := int(block[offset+8])
+		if namelen == 0 {
+			break
+		}
+
+		if offset+9+namelen > len(block) {
+			break
+		}
+
+		name := string(block[offset+9 : offset+9+namelen])
+
+		// Calculate entry size
+		entrySize := 8 + 1 + namelen + 1 + 2
+		padding := (8 - (entrySize & 7)) & 7
+		totalSize := entrySize + padding
+
+		// Check if this is the entry to remove
+		if name == entryName && ino == targetInum {
+			// Mark as free by setting freetag
+			binary.BigEndian.PutUint16(block[entryStart:entryStart+2], 0xFFFF)
+			binary.BigEndian.PutUint16(block[entryStart+2:entryStart+4], uint16(totalSize))
+			// Zero out the rest of the entry
+			for i := entryStart + 4; i < entryStart+totalSize && i < len(block); i++ {
+				block[i] = 0
+			}
+			return true, nil
+		}
+
+		offset += totalSize
+	}
+
+	return false, nil
 }
 
 // Rename renames a file or directory (not supported - read-only)
