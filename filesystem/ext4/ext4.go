@@ -1611,15 +1611,15 @@ func (fs *FileSystem) Stat(p string) (iofs.FileInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not read inode %d in directory: %v", entry.inode, err)
 	}
-	return NewFileInfo(in.modifyTime, in, entry), nil
-	/*return &FileInfo{
+	return &FileInfo{
 		modTime: in.modifyTime,
 		name:    entry.filename,
 		size:    int64(in.size),
 		isDir:   entry.fileType == dirFileTypeDirectory,
 		mode:    in.permissionsToMode(),
 		sys:     in.stat(),
-	}, nil*/
+		Stat:    newStatT(in),
+	}, nil
 }
 
 // SetLabel changes the label on the writable filesystem. Different file system may hav different

@@ -184,14 +184,15 @@ type directoryEntryInfo struct {
 }
 
 func (de *directoryEntryInfo) Info() (iofs.FileInfo, error) {
-	mode := de.Type()
+	//mode := de.Type()
 	return &FileInfo{
 		modTime: de.modifyTime,
 		name:    de.filename,
 		size:    int64(de.size),
 		isDir:   de.directoryEntry.fileType == dirFileTypeDirectory,
-		mode:    mode,
+		mode:    de.inode.permissionsToMode(),
 		sys:     de.stat(),
+		Stat:    newStatT(de.inode),
 	}, nil
 }
 
