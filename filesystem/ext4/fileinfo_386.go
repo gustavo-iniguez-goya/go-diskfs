@@ -8,7 +8,7 @@ import (
 
 func newStatT(in *inode) *syscall.Stat_t {
 	return &syscall.Stat_t{
-		Ino:   uint64(e.inode),
+		Ino:   uint64(in.number),
 		Nlink: uint32(in.hardLinks),
 		Mode:  uint32(in.mode),
 		Uid:   in.owner,
