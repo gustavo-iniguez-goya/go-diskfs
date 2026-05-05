@@ -957,7 +957,22 @@ func (fs *FileSystem) parseBlockDirData(block []byte, dirInum uint64) ([]*FileIn
 	var entries []*FileInfo
 	entriesFound := 0
 
+	// Safety: limit iterations to prevent infinite loops in corrupted directories
+	const maxIterations = 10000
+	iterations := 0
+
 	for offset < len(block)-8 {
+		iterations++
+		if iterations > maxIterations {
+			// Break out if we've iterated too many times
+			fmt.Printf("Warning: parseBlockDirData exceeded max iterations (%d) for inode %d, offset %d\n",
+				maxIterations, dirInum, offset)
+			break
+		}
+
+		// Store the previous offset to detect if we're not advancing
+		prevOffset := offset
+
 		// Read inode number (8 bytes)
 		if offset+8 > len(block) {
 			break
@@ -971,17 +986,33 @@ func (fs *FileSystem) parseBlockDirData(block []byte, dirInum uint64) ([]*FileIn
 				break
 			}
 			holeLen := int(binary.BigEndian.Uint16(block[offset+2 : offset+4]))
-			if holeLen < 8 || offset+holeLen > len(block) {
+
+			// Validate hole length to prevent infinite loops
+			if holeLen < 4 {
+				// Invalid hole length, skip minimum amount and continue
+				fmt.Printf("Warning: invalid hole length %d at offset %d in inode %d, advancing by 8\n",
+					holeLen, offset, dirInum)
+				offset += 8
+				continue
+			}
+
+			if offset+holeLen > len(block) {
+				// Hole extends beyond block, we're done
 				break
 			}
+
 			offset += holeLen
 			continue
 		}
 
 		ino := binary.BigEndian.Uint64(block[offset : offset+8])
 
-		// Check for unused entry markers
+		// Check for unused entry markers - MUST advance offset
 		if ino == 0 {
+			// Advance by minimum entry size to avoid infinite loop
+			// Minimum: 8(ino) + 1(namelen) + 1(name min) + 1(ftype) + 2(tag) = 13 bytes
+			// But align to 8-byte boundary
+			offset += 8
 			continue
 		}
 
@@ -991,8 +1022,20 @@ func (fs *FileSystem) parseBlockDirData(block []byte, dirInum uint64) ([]*FileIn
 		}
 
 		namelen := int(block[offset+8])
+
+		// Check for invalid namelen
 		if namelen == 0 {
-			break
+			// Zero-length name is invalid, advance and continue
+			offset += 8
+			continue
+		}
+
+		// Sanity check: XFS typically has max filename of 255
+		if namelen > 255 {
+			fmt.Printf("Warning: invalid namelen %d at offset %d in inode %d, skipping\n",
+				namelen, offset, dirInum)
+			offset += 8
+			continue
 		}
 
 		// Check if we have enough space for name
@@ -1004,14 +1047,18 @@ func (fs *FileSystem) parseBlockDirData(block []byte, dirInum uint64) ([]*FileIn
 
 		// Validate name
 		if len(name) == 0 {
-			break
+			offset += 8
+			continue
 		}
 
 		// Try to read the inode
 		childInode, err := fs.readInode(ino)
 		if err != nil {
-			// Can't read inode - skip this entry
-			offset += 9 + namelen + ((4 - (namelen & 3)) & 3)
+			// Can't read inode - skip this entry but advance offset
+			// Calculate proper entry size even if inode read failed
+			entrySize := 8 + 1 + namelen + 1 + 2
+			padding := (8 - (entrySize & 7)) & 7
+			offset += entrySize + padding
 			continue
 		}
 
@@ -1037,6 +1084,13 @@ func (fs *FileSystem) parseBlockDirData(block []byte, dirInum uint64) ([]*FileIn
 		entrySize := 8 + 1 + namelen + 1 + 2 // ino + namelen + name + ftype + tag
 		padding := (8 - (entrySize & 7)) & 7
 		offset += entrySize + padding
+
+		// Safety check: ensure we're making progress
+		if offset <= prevOffset {
+			fmt.Printf("Warning: offset not advancing at %d in inode %d, forcing +8\n",
+				offset, dirInum)
+			offset = prevOffset + 8
+		}
 	}
 
 	if entriesFound == 0 {
@@ -1044,6 +1098,7 @@ func (fs *FileSystem) parseBlockDirData(block []byte, dirInum uint64) ([]*FileIn
 	}
 
 	return entries, nil
+
 }
 
 // Mkdir creates a directory (not supported - read-only)
